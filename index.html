@@ -693,8 +693,8 @@
           <polygon points="20,1 39,26 20,51 1,26" fill="var(--text-primary)"/>
         </svg>
       </div>
-      <h1>Hi, I'm Pace!</h1>
-      <p>Your local AI model powered by Gemma 3 1B. Everything runs on your machine, no internet required for inference.</p>
+      <h1>Hi! I'm Pace, How Can I Help?</h1>
+      <p>Your local AI model powered by Gemma 3 1B. Everything runs on your machine - no internet required for inference.</p>
       <div class="welcome-chips">
         <span class="chip" onclick="useChip(this)">Write 1500 words on Easter</span>
         <span class="chip" onclick="useChip(this)">What can you do?</span>
@@ -721,7 +721,7 @@
         </svg>
       </button>
     </div>
-    <p class="input-hint">Pace runs locally · Gemma 3 1B · Pace is AI and can make mistakes. Double check all information</p>
+    <p class="input-hint">Pace is AI and can make mistakes, double check all information.</p>
   </div>
 
 </div>
@@ -1010,6 +1010,8 @@ function formatText(str) {
       // Inline code and newlines
       const safe = escapeHTML(part)
         .replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.+?)\*/g, '<em>$1</em>')
         .replace(/\n/g, '<br>');
       html += safe;
     }
