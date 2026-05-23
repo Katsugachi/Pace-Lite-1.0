@@ -1,0 +1,1089 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Pace 1.0 Lite</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  :root {
+    --bg: #f8f7f4;
+    --surface: #ffffff;
+    --surface2: #f2f0ec;
+    --border: #e5e2db;
+    --border2: #d5d1c9;
+    --text-primary: #1a1916;
+    --text-secondary: #6b6860;
+    --text-muted: #9e9b95;
+    --accent: #1a1916;
+    --accent-soft: #f0f0f0;
+    --accent-hover: #333333;
+    --pace-bubble: #f2f2f2;
+    --user-bubble: #1a1916;
+    --user-text: #ffffff;
+    --pace-text: #1a1916;
+    --input-bg: #ffffff;
+    --input-border: #e0e0e0;
+    --scrollbar: #d4d4d4;
+    --thinking-dot: #1a1916;
+    --tool-bg: #f5f5f5;
+    --tool-border: #e0e0e0;
+    --tool-text: #6b6b6b;
+    --header-bg: rgba(248,247,244,0.92);
+    --shadow: 0 1px 4px rgba(0,0,0,0.07), 0 4px 16px rgba(0,0,0,0.04);
+    --shadow-input: 0 2px 8px rgba(0,0,0,0.08);
+    --radius: 18px;
+    --radius-sm: 10px;
+  }
+
+  [data-theme="dark"] {
+    --bg: #19181a;
+    --surface: #222124;
+    --surface2: #2a2829;
+    --border: #333133;
+    --border2: #3e3c3e;
+    --text-primary: #f0ede8;
+    --text-secondary: #a09c96;
+    --text-muted: #6a6560;
+    --accent: #f0ede8;
+    --accent-soft: #2a2829;
+    --accent-hover: #ffffff;
+    --pace-bubble: #2a2829;
+    --user-bubble: #f0ede8;
+    --user-text: #1a1916;
+    --pace-text: #f0ede8;
+    --input-bg: #222124;
+    --input-border: #3a3838;
+    --scrollbar: #3a3838;
+    --thinking-dot: #f0ede8;
+    --tool-bg: #252324;
+    --tool-border: #333133;
+    --tool-text: #8a857e;
+    --header-bg: rgba(25,24,26,0.92);
+    --shadow: 0 1px 4px rgba(0,0,0,0.3), 0 4px 16px rgba(0,0,0,0.2);
+    --shadow-input: 0 2px 8px rgba(0,0,0,0.3);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    font-family: 'Sora', sans-serif;
+    background: var(--bg);
+    color: var(--text-primary);
+    transition: background 0.25s, color 0.25s;
+    overflow: hidden;
+  }
+
+  /* ── Layout ── */
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    max-width: 780px;
+    margin: 0 auto;
+    position: relative;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    background: var(--header-bg);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    transition: background 0.25s, border-color 0.25s;
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .logo-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+    background: var(--text-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .logo-wordmark {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+  }
+
+  .logo-badge {
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 1px 6px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #4caf8a;
+    flex-shrink: 0;
+    transition: background 0.3s;
+  }
+  .status-dot.loading { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  .status-dot.offline { background: var(--text-muted); }
+
+  .status-label {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+
+  .btn-icon {
+    width: 34px;
+    height: 34px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
+    flex-shrink: 0;
+  }
+  .btn-icon:hover {
+    background: var(--surface2);
+    border-color: var(--border2);
+    color: var(--text-primary);
+    transform: scale(1.04);
+  }
+  .btn-icon:active { transform: scale(0.96); }
+
+  /* ── Chat area ── */
+  .chat-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 28px 20px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar) transparent;
+  }
+  .chat-scroll::-webkit-scrollbar { width: 4px; }
+  .chat-scroll::-webkit-scrollbar-track { background: transparent; }
+  .chat-scroll::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 4px; }
+
+  /* ── Welcome state ── */
+  .welcome {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+    gap: 16px;
+    text-align: center;
+    padding: 40px 20px;
+    animation: fadeUp 0.5s ease both;
+  }
+
+  .welcome-icon {
+    width: 60px;
+    height: 70px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .welcome h1 {
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: -0.03em;
+  }
+
+  .welcome p {
+    font-size: 14px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    max-width: 380px;
+  }
+
+  .welcome-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    margin-top: 6px;
+  }
+
+  .chip {
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 6px 14px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
+    user-select: none;
+  }
+  .chip:hover {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+    transform: translateY(-1px);
+  }
+
+  /* ── Message rows ── */
+  .message-row {
+    display: flex;
+    gap: 10px;
+    max-width: 100%;
+    animation: fadeUp 0.28s ease both;
+    margin-bottom: 6px;
+  }
+
+  .message-row.user {
+    flex-direction: row-reverse;
+    align-self: flex-end;
+    max-width: 75%;
+  }
+
+  .message-row.pace {
+    align-self: flex-start;
+    max-width: 88%;
+  }
+
+  .avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 9px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 2px;
+  }
+
+  .avatar.pace-av {
+    background: var(--text-primary);
+  }
+
+  .avatar.user-av {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+  }
+
+  .bubble {
+    padding: 13px 17px;
+    border-radius: var(--radius);
+    font-size: 14px;
+    line-height: 1.7;
+    word-break: break-word;
+    transition: background 0.25s;
+    position: relative;
+  }
+
+  .message-row.user .bubble {
+    background: var(--user-bubble);
+    color: var(--user-text);
+    border-bottom-right-radius: 5px;
+  }
+
+  .message-row.pace .bubble {
+    background: var(--pace-bubble);
+    color: var(--pace-text);
+    border-bottom-left-radius: 5px;
+  }
+
+  /* Tool call display */
+  .tool-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--tool-text);
+    background: var(--tool-bg);
+    border: 1px solid var(--tool-border);
+    border-radius: 7px;
+    padding: 4px 9px;
+    margin-bottom: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0.01em;
+  }
+
+  .tool-result {
+    margin-top: 8px;
+    padding: 10px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 180px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar) transparent;
+  }
+
+  /* Thinking indicator */
+  .thinking-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    align-self: flex-start;
+    animation: fadeUp 0.28s ease both;
+    margin-bottom: 6px;
+  }
+
+  .thinking-bubble {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--pace-bubble);
+    border-radius: var(--radius);
+    border-bottom-left-radius: 5px;
+    padding: 13px 16px;
+  }
+
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-primary);
+    animation: bounce 1.3s ease-in-out infinite;
+  }
+  .dot:nth-child(2) { animation-delay: 0.16s; }
+  .dot:nth-child(3) { animation-delay: 0.32s; }
+
+  .thinking-label {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-style: italic;
+    margin-left: 4px;
+  }
+
+  .diamond-icon { fill: var(--bg); }
+
+  /* ── Message wrapper with copy button ── */
+  .msg-outer {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .msg-outer.pace-outer { align-items: flex-start; }
+  .msg-outer.user-outer { align-items: flex-end; }
+
+  .copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 6px;
+    transition: color 0.15s, background 0.15s;
+    font-family: 'Sora', sans-serif;
+    opacity: 0;
+    pointer-events: none;
+    align-self: flex-start;
+  }
+
+  .msg-outer:hover .copy-btn {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .copy-btn:hover {
+    color: var(--text-primary);
+    background: var(--surface2);
+  }
+
+  .copy-btn.copied {
+    color: var(--text-secondary);
+    opacity: 1;
+    pointer-events: none;
+  }
+
+  /* ── Code blocks ── */
+  .code-block {
+    position: relative;
+    margin: 10px 0 4px;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .code-block-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 7px 12px;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .code-lang {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-family: 'Sora', sans-serif;
+  }
+
+  .code-copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 5px;
+    font-family: 'Sora', sans-serif;
+    transition: color 0.15s, background 0.15s;
+  }
+
+  .code-copy-btn:hover {
+    color: var(--text-primary);
+    background: var(--border);
+  }
+
+  .code-copy-btn.copied { color: var(--text-secondary); cursor: default; }
+
+  .code-block pre {
+    margin: 0;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    line-height: 1.65;
+    color: var(--text-primary);
+    white-space: pre;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar) transparent;
+  }
+
+  code.inline-code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    background: var(--tool-bg);
+    border: 1px solid var(--tool-border);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+
+  /* ── Input bar ── */
+  .input-area {
+    padding: 12px 20px 20px;
+    background: var(--bg);
+    transition: background 0.25s;
+  }
+
+  .input-shell {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--input-bg);
+    border: 1.5px solid var(--input-border);
+    border-radius: 22px;
+    padding: 10px 10px 10px 18px;
+    box-shadow: var(--shadow-input);
+    transition: border-color 0.2s, box-shadow 0.2s, background 0.25s;
+  }
+
+  .input-shell:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-input);
+  }
+
+  #user-input {
+    flex: 1;
+    border: none;
+    outline: none;
+    background: transparent;
+    font-family: 'Sora', sans-serif;
+    font-size: 14px;
+    color: var(--text-primary);
+    resize: none;
+    max-height: 140px;
+    line-height: 1.55;
+    padding: 0;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar) transparent;
+  }
+
+  #user-input::placeholder { color: var(--text-muted); }
+
+  .send-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 14px;
+    border: none;
+    background: var(--text-primary);
+    color: var(--bg);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background 0.15s, transform 0.1s, opacity 0.15s;
+  }
+  .send-btn:hover:not(:disabled) { opacity: 0.82; transform: scale(1.06); }
+  .send-btn:active:not(:disabled) { transform: scale(0.94); }
+  .send-btn:disabled { opacity: 0.25; cursor: default; }
+
+  .input-hint {
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 8px;
+  }
+
+  /* ── Animations ── */
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes bounce {
+    0%, 80%, 100% { transform: translateY(0); opacity: 0.6; }
+    40%           { transform: translateY(-6px); opacity: 1; }
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.4; }
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  /* ── Divider ── */
+  .day-divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin: 8px 0 4px;
+  }
+  .day-divider::before,
+  .day-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  /* ── Scrollbar ── */
+  .chat-scroll::-webkit-scrollbar { width: 4px; }
+  .chat-scroll::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- Header -->
+  <header>
+    <div class="header-left">
+      <div class="logo">
+        <div class="logo-icon">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <polygon points="9,1 15,9 9,17 3,9" class="diamond-icon"/>
+          </svg>
+        </div>
+        <span class="logo-wordmark">PACE</span>
+        <span class="logo-badge">1.0 Lite</span>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <div class="status-dot offline" id="statusDot"></div>
+      <span class="status-label" id="statusLabel">Ready</span>
+
+      <!-- Clear button -->
+      <button class="btn-icon" id="clearBtn" title="Clear conversation">
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M3 3L12 12M3 12L12 3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        </svg>
+      </button>
+
+      <!-- Dark/Light toggle -->
+      <button class="btn-icon" id="themeToggle" title="Toggle theme">
+        <!-- Sun icon (shown in dark mode) -->
+        <svg id="iconSun" width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:none">
+          <circle cx="7.5" cy="7.5" r="2.8" stroke="currentColor" stroke-width="1.6"/>
+          <line x1="7.5" y1="1" x2="7.5" y2="2.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          <line x1="7.5" y1="12.5" x2="7.5" y2="14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          <line x1="1" y1="7.5" x2="2.5" y2="7.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          <line x1="12.5" y1="7.5" x2="14" y2="7.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          <line x1="3.05" y1="3.05" x2="4.1" y2="4.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          <line x1="10.9" y1="10.9" x2="11.95" y2="11.95" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          <line x1="11.95" y1="3.05" x2="10.9" y2="4.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          <line x1="4.1" y1="10.9" x2="3.05" y2="11.95" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+        <!-- Moon icon (shown in light mode) -->
+        <svg id="iconMoon" width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12.5 9.5A6 6 0 015.5 2.5a6.002 6.002 0 100 10 6 6 0 007-3z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Chat scroll area -->
+  <div class="chat-scroll" id="chatScroll">
+
+    <!-- Welcome screen -->
+    <div class="welcome" id="welcomeScreen">
+      <div class="welcome-icon">
+        <svg width="40" height="52" viewBox="0 0 40 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <polygon points="20,1 39,26 20,51 1,26" fill="var(--text-primary)"/>
+        </svg>
+      </div>
+      <h1>Hi, I'm Pace!</h1>
+      <p>Your local AI model powered by Gemma 3 1B. Everything runs on your machine, no internet required for inference.</p>
+      <div class="welcome-chips">
+        <span class="chip" onclick="useChip(this)">Write 1500 words on Easter</span>
+        <span class="chip" onclick="useChip(this)">What can you do?</span>
+        <span class="chip" onclick="useChip(this)">Tell me about Sun Tzu : The Art Of War</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Input area -->
+  <div class="input-area">
+    <div class="input-shell">
+      <textarea
+        id="user-input"
+        rows="1"
+        placeholder="Message Pace…"
+        autocomplete="off"
+        spellcheck="true"
+      ></textarea>
+      <button class="send-btn" id="sendBtn" disabled>
+        <!-- Arrow up icon -->
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M7.5 12.5V3M7.5 3L3.5 7.5M7.5 3L11.5 7.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+    <p class="input-hint">Pace runs locally · Gemma 3 1B · Pace is AI and can make mistakes. Double check all information</p>
+  </div>
+
+</div>
+
+<script>
+// ─────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────
+const chat = document.getElementById('chatScroll');
+const input = document.getElementById('user-input');
+const sendBtn = document.getElementById('sendBtn');
+const welcomeScreen = document.getElementById('welcomeScreen');
+const statusDot = document.getElementById('statusDot');
+const statusLabel = document.getElementById('statusLabel');
+let messages = []; // {role, content}
+let isThinking = false;
+let sessionStarted = false;
+
+// WebSocket / IPC – connects to Python backend via WebSocket on localhost:7070
+// Falls back to a "no backend" graceful state if not connected.
+let ws = null;
+let wsConnected = false;
+
+function connectWS() {
+  try {
+    ws = new WebSocket('ws://localhost:7070');
+    ws.onopen = () => {
+      wsConnected = true;
+      setStatus('ready');
+    };
+    ws.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      handleServerMessage(data);
+    };
+    ws.onclose = () => {
+      wsConnected = false;
+      setStatus('offline');
+      // Retry after 3s
+      setTimeout(connectWS, 3000);
+    };
+    ws.onerror = () => {
+      wsConnected = false;
+    };
+  } catch(err) {
+    setStatus('offline');
+  }
+}
+
+function sendToBackend(text) {
+  if (wsConnected && ws) {
+    ws.send(JSON.stringify({ type: 'user', content: text }));
+  } else {
+    // Simulate a "not connected" reply
+    setTimeout(() => {
+      removeThinking();
+      appendPaceMessage("I'm not connected to the PACE backend yet. Make sure you launched PACE via the .bat file and the server is running.", null);
+      setIdle();
+    }, 1200);
+  }
+}
+
+function handleServerMessage(data) {
+  if (data.type === 'status') {
+    setStatus(data.status);
+    if (data.status === 'ready') setIdle();
+    return;
+  }
+  removeThinking();
+  if (data.type === 'tool') {
+    appendPaceMessage(data.text, data.tool, data.result);
+  } else if (data.type === 'message') {
+    appendPaceMessage(data.content, null);
+  }
+  setIdle();
+}
+
+// ─────────────────────────────────────────────
+// Status
+// ─────────────────────────────────────────────
+function setStatus(state) {
+  statusDot.className = 'status-dot';
+  if (state === 'ready') {
+    statusDot.style.background = '#4caf8a';
+    statusLabel.textContent = 'Ready';
+  } else if (state === 'thinking') {
+    statusDot.classList.add('loading');
+    statusLabel.textContent = 'Thinking…';
+  } else if (state === 'offline') {
+    statusDot.classList.add('offline');
+    statusLabel.textContent = 'Offline';
+  }
+}
+
+function setIdle() {
+  isThinking = false;
+  sendBtn.disabled = input.value.trim() === '';
+  setStatus(wsConnected ? 'ready' : 'offline');
+}
+
+// ─────────────────────────────────────────────
+// Input auto-resize
+// ─────────────────────────────────────────────
+input.addEventListener('input', () => {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+  sendBtn.disabled = input.value.trim() === '' || isThinking;
+});
+
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    if (!sendBtn.disabled) sendMessage();
+  }
+});
+
+sendBtn.addEventListener('click', sendMessage);
+
+// ─────────────────────────────────────────────
+// Send a message
+// ─────────────────────────────────────────────
+function sendMessage() {
+  const text = input.value.trim();
+  if (!text || isThinking) return;
+
+  if (!sessionStarted) {
+    welcomeScreen.style.display = 'none';
+    sessionStarted = true;
+  }
+
+  appendUserMessage(text);
+  input.value = '';
+  input.style.height = 'auto';
+  sendBtn.disabled = true;
+  isThinking = true;
+  setStatus('thinking');
+
+  showThinking();
+  requestAnimationFrame(() => requestAnimationFrame(() => sendToBackend(text)));
+}
+
+function useChip(el) {
+  input.value = el.textContent;
+  input.dispatchEvent(new Event('input'));
+  input.focus();
+}
+
+// ─────────────────────────────────────────────
+// DOM helpers
+// ─────────────────────────────────────────────
+function appendUserMessage(text) {
+  const outer = document.createElement('div');
+  outer.className = 'msg-outer user-outer';
+
+  const copyBtn = `<button class="copy-btn" onclick="copyMessage(${JSON.stringify(text)}, this)">
+    <svg width="11" height="11" viewBox="0 0 11 11" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="3.5" y="3.5" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.2"/>
+      <path d="M2 7.5H1.5A.5.5 0 011 7V1.5A.5.5 0 011.5 1H7a.5.5 0 01.5.5V2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+    </svg>Copy</button>`;
+
+  outer.innerHTML = `
+    <div class="message-row user">
+      <div class="avatar user-av">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="7" cy="5" r="2.6" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M2 12.5c0-2.76 2.24-5 5-5s5 2.24 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="bubble">${escapeHTML(text)}</div>
+    </div>
+    ${copyBtn}
+  `;
+  chat.appendChild(outer);
+  scrollToBottom();
+}
+
+function appendPaceMessage(text, toolName, toolResult) {
+  const outer = document.createElement('div');
+  outer.className = 'msg-outer pace-outer';
+
+  let inner = '';
+  if (toolName) {
+    inner += `<div class="tool-badge">
+      <svg width="11" height="11" viewBox="0 0 11 11" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="1" y="4" width="9" height="6" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+        <path d="M3.5 4V3a2 2 0 014 0v1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+      </svg>
+      ${escapeHTML(toolName)}
+    </div>`;
+    if (toolResult) {
+      inner += `<div class="tool-result">${escapeHTML(toolResult)}</div>`;
+    }
+  }
+
+  if (text) {
+    inner += `<div style="margin-top:${toolName ? '10px' : '0'}">${formatText(text)}</div>`;
+  }
+
+  const rawText = [toolResult, text].filter(Boolean).join('\n\n');
+  const copyBtn = `<button class="copy-btn" onclick="copyMessage(${JSON.stringify(rawText)}, this)">
+    <svg width="11" height="11" viewBox="0 0 11 11" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="3.5" y="3.5" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.2"/>
+      <path d="M2 7.5H1.5A.5.5 0 011 7V1.5A.5.5 0 011.5 1H7a.5.5 0 01.5.5V2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+    </svg>Copy</button>`;
+
+  outer.innerHTML = `
+    <div class="message-row pace">
+      <div class="avatar pace-av">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <polygon points="7,1 13,7 7,13 1,7" class="diamond-icon"/>
+        </svg>
+      </div>
+      <div class="bubble">${inner}</div>
+    </div>
+    ${copyBtn}
+  `;
+  chat.appendChild(outer);
+  scrollToBottom();
+}
+
+let thinkingRow = null;
+function showThinking() {
+  thinkingRow = document.createElement('div');
+  thinkingRow.className = 'thinking-row';
+  thinkingRow.innerHTML = `
+    <div class="avatar pace-av">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <polygon points="7,1 13,7 7,13 1,7" class="diamond-icon"/>
+      </svg>
+    </div>
+    <div class="thinking-bubble">
+      <div class="dot"></div>
+      <div class="dot"></div>
+      <div class="dot"></div>
+      <span class="thinking-label">Thinking</span>
+    </div>
+  `;
+  chat.appendChild(thinkingRow);
+  scrollToBottom();
+}
+
+function removeThinking() {
+  if (thinkingRow) {
+    thinkingRow.remove();
+    thinkingRow = null;
+  }
+}
+
+function scrollToBottom() {
+  requestAnimationFrame(() => {
+    chat.scrollTop = chat.scrollHeight;
+  });
+}
+
+function escapeHTML(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function formatText(str) {
+  // Split on fenced code blocks first (```lang\n...\n```)
+  const parts = str.split(/(```[\s\S]*?```)/g);
+  let html = '';
+  for (const part of parts) {
+    const fenced = part.match(/^```(\w*)\n?([\s\S]*?)```$/);
+    if (fenced) {
+      const lang = fenced[1] || 'code';
+      const code = fenced[2];
+      const id = 'cb_' + Math.random().toString(36).slice(2);
+      html += `<div class="code-block">
+        <div class="code-block-header">
+          <span class="code-lang">${escapeHTML(lang)}</span>
+          <button class="code-copy-btn" onclick="copyCode('${id}', this)">
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="3.5" y="3.5" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.2"/>
+              <path d="M2 7.5H1.5A.5.5 0 011 7V1.5A.5.5 0 011.5 1H7a.5.5 0 01.5.5V2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+            Copy
+          </button>
+        </div>
+        <pre id="${id}">${escapeHTML(code)}</pre>
+      </div>`;
+    } else {
+      // Inline code and newlines
+      const safe = escapeHTML(part)
+        .replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
+        .replace(/\n/g, '<br>');
+      html += safe;
+    }
+  }
+  return html;
+}
+
+function copyCode(id, btn) {
+  const pre = document.getElementById(id);
+  if (!pre) return;
+  navigator.clipboard.writeText(pre.textContent).then(() => {
+    btn.classList.add('copied');
+    btn.innerHTML = `<svg width="11" height="11" viewBox="0 0 11 11" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 5.5l2.5 2.5 4.5-4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Copied`;
+    setTimeout(() => {
+      btn.classList.remove('copied');
+      btn.innerHTML = `<svg width="11" height="11" viewBox="0 0 11 11" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="3.5" y="3.5" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M2 7.5H1.5A.5.5 0 011 7V1.5A.5.5 0 011.5 1H7a.5.5 0 01.5.5V2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Copy`;
+    }, 1800);
+  });
+}
+
+function copyMessage(rawText, btn) {
+  navigator.clipboard.writeText(rawText).then(() => {
+    btn.classList.add('copied');
+    btn.innerHTML = `<svg width="11" height="11" viewBox="0 0 11 11" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 5.5l2.5 2.5 4.5-4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Copied`;
+    setTimeout(() => {
+      btn.classList.remove('copied');
+      btn.innerHTML = `<svg width="11" height="11" viewBox="0 0 11 11" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="3.5" y="3.5" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M2 7.5H1.5A.5.5 0 011 7V1.5A.5.5 0 011.5 1H7a.5.5 0 01.5.5V2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Copy`;
+    }, 1800);
+  });
+}
+
+// ─────────────────────────────────────────────
+// Theme toggle
+// ─────────────────────────────────────────────
+const themeToggle = document.getElementById('themeToggle');
+const iconSun = document.getElementById('iconSun');
+const iconMoon = document.getElementById('iconMoon');
+
+function applyTheme(dark) {
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  iconSun.style.display = dark ? 'block' : 'none';
+  iconMoon.style.display = dark ? 'none' : 'block';
+  localStorage.setItem('pace-theme', dark ? 'dark' : 'light');
+}
+
+themeToggle.addEventListener('click', () => {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  applyTheme(!isDark);
+});
+
+// Restore saved theme
+const savedTheme = localStorage.getItem('pace-theme');
+if (savedTheme) applyTheme(savedTheme === 'dark');
+
+// ─────────────────────────────────────────────
+// Clear
+// ─────────────────────────────────────────────
+document.getElementById('clearBtn').addEventListener('click', () => {
+  // Remove all message rows
+  const rows = chat.querySelectorAll('.msg-outer, .message-row, .thinking-row, .day-divider');
+  rows.forEach(r => r.remove());
+  welcomeScreen.style.display = 'flex';
+  sessionStarted = false;
+  messages = [];
+  if (ws && wsConnected) {
+    ws.send(JSON.stringify({ type: 'clear' }));
+  }
+});
+
+// ─────────────────────────────────────────────
+// Boot
+// ─────────────────────────────────────────────
+connectWS();
+input.focus();
+</script>
+</body>
+</html>
