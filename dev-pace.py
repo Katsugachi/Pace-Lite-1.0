@@ -36,6 +36,8 @@ except Exception:
 MODEL_NAME = "gemma-3-1b-it-Q4_K_M.gguf"
 MODEL_URL = "https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf"
 PACE_DIR_NAME = ".pace_agent"
+MAX_BASIC_PROMPT_LENGTH = 12
+MAX_RESEARCH_TEXT_LENGTH = 6500
 
 # Shared state for WebSocket server
 _ws_state = {
@@ -276,12 +278,13 @@ def is_super_basic_prompt(text):
 
     super_basic = {
         "hi", "hello", "hey", "yo", "sup", "what's up", "how are you",
-        "thanks", "thank you", "ok", "okay", "cool", "nice", "bye", "goodbye"
+        "thanks", "thank you", "ok", "okay", "cool", "nice", "bye", "goodbye",
+        "howdy", "hiya", "cheers", "good morning", "good afternoon", "good evening", "see you"
     }
     if lowered in super_basic:
         return True
 
-    if len(lowered) <= 12 and re.fullmatch(r"[a-z\s!?.,']+", lowered):
+    if len(lowered) <= MAX_BASIC_PROMPT_LENGTH and re.fullmatch(r"[a-z\s!?.,']+", lowered):
         return True
 
     return False
@@ -291,7 +294,7 @@ def build_search_queries(user_text):
     if not text:
         return []
 
-    codeish = bool(re.search(r"\b(code|python|javascript|java|c\+\+|tutorial|error|bug|function|api|class|framework)\b", text, re.IGNORECASE))
+    codeish = bool(re.search(r"\b(code|python|javascript|java|c\+\+|tutorial|error|bug|function|api|class|framework|syntax|compile|debug|library|package|module|import|export|variable|loop|array|database|sql|html|css|react|node|git)\b", text, re.IGNORECASE))
     queries = [text]
 
     if codeish:
@@ -383,8 +386,8 @@ def build_web_research(user_text, progress_cb=None):
         lines.append("Cross-reference matches: no repeated sources found across queries.")
 
     research_text = "\n".join(lines).strip()
-    if len(research_text) > 6500:
-        research_text = research_text[:6500] + "\n... [truncated]"
+    if len(research_text) > MAX_RESEARCH_TEXT_LENGTH:
+        research_text = research_text[:MAX_RESEARCH_TEXT_LENGTH] + "\n... [truncated]"
 
     if progress_cb:
         progress_cb({
@@ -721,15 +724,20 @@ async def _ws_handler(websocket):
 
             should_search = internet_available and not is_super_basic_prompt(user_text)
             if should_search:
+                search_progress_tasks = []
+
                 def ws_progress(payload):
                     event = {"type": "search_progress"}
                     event.update(payload)
                     try:
-                        asyncio.create_task(websocket.send(json.dumps(event)))
+                        task = asyncio.get_running_loop().create_task(websocket.send(json.dumps(event)))
+                        search_progress_tasks.append(task)
                     except Exception:
                         pass
 
                 web_research = build_web_research(user_text, progress_cb=ws_progress)
+                if search_progress_tasks:
+                    await asyncio.gather(*search_progress_tasks, return_exceptions=True)
                 if web_research:
                     history.append({
                         "role": "user",
@@ -878,7 +886,8 @@ Rules:
         {"role": "system", "content": system_prompt}
     ]
 
-    # Share state with WS server
+    # Share state with WS server. RLock is required because internet checks
+    # also consult shared state while request handlers already hold this lock.
     _ws_state["llm"] = llm
     _ws_state["history"] = history
     _ws_state["system_prompt"] = system_prompt
