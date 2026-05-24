@@ -10,6 +10,7 @@ import json
 import asyncio
 import time
 import datetime
+import html
 from pathlib import Path
 
 try:
@@ -42,6 +43,12 @@ MAX_RESEARCH_TEXT_LENGTH = 6500
 INTERNET_CHECK_CACHE_SECONDS = 20
 MAX_QUERY_TERMS = 10
 MAX_RESULT_AGE_YEARS = 4
+MAX_HISTORY_CHAR_BUDGET = 45000
+WEB_RESEARCH_MIN_SOURCES = 5
+WEB_RESEARCH_MAX_SOURCES = 6
+WEB_SOURCE_FETCH_TIMEOUT_SECONDS = 8
+WEB_SOURCE_MAX_BYTES = 180000
+WEB_SOURCE_SNIPPET_CHARS = 420
 CODE_RELATED_KEYWORDS_PATTERN = re.compile(
     r"\b(code|python|javascript|java|c\+\+|cpp|tutorial|error|bug|function|api|class|framework|syntax|compile|debug|library|package|module|import|export|variable|loop|array|database|sql|html|css|react|node|git)\b",
     re.IGNORECASE,
@@ -243,7 +250,8 @@ def _flatten_related_topics(items):
     return out
 
 def _clean_text(value):
-    text = re.sub(r"<[^>]+>", "", value or "")
+    text = html.unescape(value or "")
+    text = re.sub(r"<[^>]+>", "", text)
     return re.sub(r"\s+", " ", text).strip()
 
 def _current_utc_date():
@@ -350,7 +358,65 @@ def _rank_and_filter_hits(user_text, query, hits):
             scored.append(item)
 
     scored.sort(key=lambda x: (x.get("score", 0), x.get("overlap", 0)), reverse=True)
-    return scored[:5]
+    return scored[:6]
+
+def _normalize_search_result_url(url):
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+
+    if raw.startswith("//"):
+        raw = "https:" + raw
+
+    if raw.startswith("/l/?"):
+        parsed = urllib.parse.urlparse(raw)
+        target = urllib.parse.parse_qs(parsed.query).get("uddg", [""])[0]
+        raw = urllib.parse.unquote(target).strip()
+
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme in {"http", "https"}:
+        return raw
+    return ""
+
+def _extract_source_context_from_html(page_html):
+    text = page_html or ""
+    text = re.sub(r"<script\b[^>]*>.*?</script>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", text, flags=re.IGNORECASE | re.DOTALL)
+    title = _clean_text(title_match.group(1)) if title_match else ""
+
+    desc_match = re.search(
+        r'<meta[^>]+name=["\']description["\'][^>]+content=["\'](.*?)["\']',
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    description = _clean_text(desc_match.group(1)) if desc_match else ""
+
+    body_text = _clean_text(text)
+    if len(body_text) > WEB_SOURCE_SNIPPET_CHARS:
+        body_text = body_text[:WEB_SOURCE_SNIPPET_CHARS].rstrip() + "..."
+
+    summary = description or body_text
+    if len(summary) > WEB_SOURCE_SNIPPET_CHARS:
+        summary = summary[:WEB_SOURCE_SNIPPET_CHARS].rstrip() + "..."
+
+    return {
+        "title": title or "Untitled source",
+        "summary": summary or "No extractable content.",
+    }
+
+def fetch_source_context(url):
+    normalized = _normalize_search_result_url(url)
+    if not normalized:
+        return None
+
+    req = urllib.request.Request(normalized, headers={"User-Agent": "PACE-Lite/1.0"})
+    with urllib.request.urlopen(req, timeout=WEB_SOURCE_FETCH_TIMEOUT_SECONDS) as response:
+        payload = response.read(WEB_SOURCE_MAX_BYTES).decode("utf-8", errors="replace")
+    context = _extract_source_context_from_html(payload)
+    context["url"] = normalized
+    return context
 
 def search_duckduckgo(query, max_results=5):
     url = (
@@ -369,7 +435,7 @@ def search_duckduckgo(query, max_results=5):
         results.append({
             "title": _clean_text(data.get("Heading")) or query,
             "snippet": abstract,
-            "url": data.get("AbstractURL", ""),
+            "url": _normalize_search_result_url(data.get("AbstractURL", "")),
         })
 
     for item in data.get("Results", []):
@@ -379,7 +445,7 @@ def search_duckduckgo(query, max_results=5):
         results.append({
             "title": snippet.split(" - ")[0][:120],
             "snippet": snippet,
-            "url": item.get("FirstURL", ""),
+            "url": _normalize_search_result_url(item.get("FirstURL", "")),
         })
 
     for item in _flatten_related_topics(data.get("RelatedTopics")):
@@ -391,7 +457,7 @@ def search_duckduckgo(query, max_results=5):
         results.append({
             "title": snippet.split(" - ")[0][:120],
             "snippet": snippet,
-            "url": item.get("FirstURL", ""),
+            "url": _normalize_search_result_url(item.get("FirstURL", "")),
         })
 
     deduped = []
@@ -463,6 +529,7 @@ def build_web_research(user_text, progress_cb=None):
 
     current_date = _current_utc_date()
     by_query = []
+    candidate_hits = []
     url_to_queries = {}
 
     total = len(queries)
@@ -477,7 +544,7 @@ def build_web_research(user_text, progress_cb=None):
             })
 
         try:
-            hits = search_duckduckgo(query, max_results=5)
+            hits = search_duckduckgo(query, max_results=10)
             hits = _rank_and_filter_hits(user_text, query, hits)
         except Exception as e:
             hits = []
@@ -494,6 +561,9 @@ def build_web_research(user_text, progress_cb=None):
             url = (hit.get("url") or "").strip()
             if url:
                 url_to_queries.setdefault(url, set()).add(query)
+                item = dict(hit)
+                item["query"] = query
+                candidate_hits.append(item)
 
         by_query.append((query, hits))
         if progress_cb:
@@ -508,6 +578,42 @@ def build_web_research(user_text, progress_cb=None):
     corroborated_urls = [
         url for url, matched_queries in url_to_queries.items() if len(matched_queries) > 1
     ][:5]
+
+    candidate_hits.sort(key=lambda x: (x.get("score", 0), x.get("overlap", 0)), reverse=True)
+    visited_sources = []
+    seen_visited_urls = set()
+    for hit in candidate_hits:
+        if len(visited_sources) >= WEB_RESEARCH_MAX_SOURCES:
+            break
+        url = (hit.get("url") or "").strip()
+        if not url or url in seen_visited_urls:
+            continue
+        seen_visited_urls.add(url)
+
+        if progress_cb:
+            progress_cb({
+                "phase": "visiting",
+                "step": len(visited_sources) + 1,
+                "total": WEB_RESEARCH_MAX_SOURCES,
+                "query": hit.get("query", ""),
+                "message": f"Visiting source ({len(visited_sources) + 1}/{WEB_RESEARCH_MAX_SOURCES}): {url}",
+            })
+
+        try:
+            source = fetch_source_context(url)
+            if source:
+                source["score"] = hit.get("score", 0)
+                source["query"] = hit.get("query", "")
+                visited_sources.append(source)
+        except Exception as e:
+            if progress_cb:
+                progress_cb({
+                    "phase": "visit_error",
+                    "step": len(visited_sources) + 1,
+                    "total": WEB_RESEARCH_MAX_SOURCES,
+                    "query": hit.get("query", ""),
+                    "message": f"Could not fetch source '{url}': {e}",
+                })
 
     lines = []
     lines.append(f"Live web research (cross-referenced, current date UTC: {current_date}):")
@@ -527,12 +633,47 @@ def build_web_research(user_text, progress_cb=None):
             if url:
                 lines.append(f"  Source: {url}")
 
+    if visited_sources:
+        lines.append(f"Visited source pages ({len(visited_sources)} successful fetches, target {WEB_RESEARCH_MIN_SOURCES}-{WEB_RESEARCH_MAX_SOURCES}):")
+        for source in visited_sources:
+            lines.append(f"- {source.get('title', 'Untitled source')}: {source.get('summary', 'No extractable content.')}")
+            lines.append(f"  Source: {source.get('url', '')}")
+        if len(visited_sources) < WEB_RESEARCH_MIN_SOURCES:
+            lines.append(
+                f"Note: only {len(visited_sources)} source pages were fetchable; network/content restrictions may have limited source retrieval."
+            )
+    else:
+        lines.append("Visited source pages: no source pages could be fetched.")
+
     if corroborated_urls:
         lines.append("Cross-reference matches (same source appeared in multiple searches):")
         for url in corroborated_urls:
             lines.append(f"- {url}")
     else:
         lines.append("Cross-reference matches: no repeated sources found across queries.")
+
+    source_urls = []
+    for source in visited_sources:
+        url = (source.get("url") or "").strip()
+        if url and url not in source_urls:
+            source_urls.append(url)
+    if not source_urls:
+        for _, hits in by_query:
+            for hit in hits:
+                url = (hit.get("url") or "").strip()
+                if url and url not in source_urls:
+                    source_urls.append(url)
+                if len(source_urls) >= WEB_RESEARCH_MAX_SOURCES:
+                    break
+            if len(source_urls) >= WEB_RESEARCH_MAX_SOURCES:
+                break
+
+    lines.append("Sources consulted:")
+    if source_urls:
+        for url in source_urls[:WEB_RESEARCH_MAX_SOURCES]:
+            lines.append(f"- {url}")
+    else:
+        lines.append("- No source URLs available.")
 
     research_text = "\n".join(lines).strip()
     if len(research_text) > MAX_RESEARCH_TEXT_LENGTH:
@@ -826,7 +967,37 @@ def execute_tool_call(xml_text):
 
 # ── WebSocket server ──────────────────────────────────────────────────────────
 
-def _build_prompt(history):
+def _enforce_system_prompt_and_trim_history(history, system_prompt):
+    if not isinstance(history, list):
+        return
+
+    required_system = (system_prompt or "").strip()
+    if not required_system:
+        return
+
+    non_system_messages = []
+    for msg in history:
+        role = msg.get("role")
+        if role == "system":
+            continue
+        non_system_messages.append(msg)
+
+    budget = max(1000, MAX_HISTORY_CHAR_BUDGET - len(required_system))
+    kept_reversed = []
+    used = 0
+    for msg in reversed(non_system_messages):
+        msg_len = len(str(msg.get("role", ""))) + len(str(msg.get("content", ""))) + 32
+        if kept_reversed and (used + msg_len) > budget:
+            break
+        kept_reversed.append(msg)
+        used += msg_len
+
+    history.clear()
+    history.append({"role": "system", "content": required_system})
+    history.extend(reversed(kept_reversed))
+
+def _build_prompt(history, system_prompt):
+    _enforce_system_prompt_and_trim_history(history, system_prompt)
     prompt = ""
     for msg in history:
         prompt += f"<start_of_turn>{msg['role']}\n{msg['content']}<end_of_turn>\n"
@@ -866,6 +1037,7 @@ async def _ws_handler(websocket):
         with _ws_state["lock"]:
             llm = _ws_state["llm"]
             history = _ws_state["history"]
+            system_prompt = _ws_state["system_prompt"]
 
             history.append({"role": "user", "content": user_text})
             user_requested_tool = user_explicitly_requested_tool(user_text)
@@ -899,7 +1071,8 @@ async def _ws_handler(websocket):
                         "content": (
                             "Use the web research below for your answer. Cross-reference these sources, "
                             "state when evidence conflicts, prefer evidence from the last 4 years for current topics, "
-                            "and clearly use the current UTC date included in the research context.\n\n"
+                            "clearly use the current UTC date included in the research context, and list the key source URLs "
+                            "you relied on at the end of your answer.\n\n"
                             f"{web_research}"
                         ),
                     })
@@ -914,7 +1087,7 @@ async def _ws_handler(websocket):
                 }))
 
             for _ in range(3):
-                prompt = _build_prompt(history)
+                prompt = _build_prompt(history, system_prompt)
 
                 response = llm(
                     prompt,
@@ -952,7 +1125,7 @@ async def _ws_handler(websocket):
                         "content": f"Tool result:\n{tool_result}\n\nNow answer the user's question using this result. Do not call any more tools."
                     })
 
-                    prompt2 = _build_prompt(history)
+                    prompt2 = _build_prompt(history, system_prompt)
                     response2 = llm(
                         prompt2,
                         max_tokens=512,
@@ -1033,6 +1206,7 @@ Rules:
 - Never use markdown such as astrisks around responses. Only respond with pure text and no markdown
 - After a tool call, wait for the result before doing anything else.
 - When web research is provided, rely on it, cross-reference claims, prioritize up-to-date evidence, and clearly call out uncertainty when sources conflict.
+- When web research is provided, include the source URLs you used in your final answer.
 - NEVER write or edit a .pdf file.
 - Keep responses short and direct.
 - Address the user directly, they are human, not an external observer.
@@ -1100,7 +1274,8 @@ Rules:
                             "content": (
                                 "Use the web research below for your answer. Cross-reference these sources, "
                                 "state when evidence conflicts, prefer evidence from the last 4 years for current topics, "
-                                "and clearly use the current UTC date included in the research context.\n\n"
+                                "clearly use the current UTC date included in the research context, and list the key source URLs "
+                                "you relied on at the end of your answer.\n\n"
                                 f"{web_research}"
                             ),
                         })
@@ -1112,7 +1287,7 @@ Rules:
                 for step in range(max_steps):
                     print(f"\r{Colors.CYAN}Thinking...{Colors.RESET}", end="", flush=True)
 
-                    prompt = _build_prompt(history)
+                    prompt = _build_prompt(history, system_prompt)
 
                     response = llm(
                         prompt,
@@ -1142,7 +1317,7 @@ Rules:
                         history.append({"role": "user", "content": f"Tool result:\n{tool_result}\n\nNow answer the user's question using this result. Do not call any more tools."})
 
                         print(f"\r{Colors.CYAN}Thinking...{Colors.RESET}", end="", flush=True)
-                        prompt2 = _build_prompt(history)
+                        prompt2 = _build_prompt(history, system_prompt)
 
                         response2 = llm(
                             prompt2,
