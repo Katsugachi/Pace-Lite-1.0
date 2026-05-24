@@ -538,7 +538,7 @@ def build_web_research(user_text, progress_cb=None):
     if len(research_text) > MAX_RESEARCH_TEXT_LENGTH:
         trimmed = research_text[:MAX_RESEARCH_TEXT_LENGTH]
         split_at = max(trimmed.rfind("\n"), trimmed.rfind(". "))
-        # If no good boundary is found, keep the character-based truncation.
+        # If split_at <= 0, no safe boundary was found and we keep raw truncation.
         if split_at > 0:
             trimmed = trimmed[:split_at].rstrip()
         research_text = trimmed + "\n... [truncated]"
