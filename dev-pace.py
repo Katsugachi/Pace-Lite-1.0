@@ -9,6 +9,7 @@ import threading
 import json
 import asyncio
 import time
+import datetime
 from pathlib import Path
 
 try:
@@ -39,8 +40,25 @@ PACE_DIR_NAME = ".pace_agent"
 MAX_BASIC_PROMPT_CHAR_COUNT = 12
 MAX_RESEARCH_TEXT_LENGTH = 6500
 INTERNET_CHECK_CACHE_SECONDS = 20
+MAX_QUERY_TERMS = 10
+MAX_RESULT_AGE_YEARS = 4
 CODE_RELATED_KEYWORDS_PATTERN = re.compile(
     r"\b(code|python|javascript|java|c\+\+|cpp|tutorial|error|bug|function|api|class|framework|syntax|compile|debug|library|package|module|import|export|variable|loop|array|database|sql|html|css|react|node|git)\b",
+    re.IGNORECASE,
+)
+QUERY_NOISE_PATTERN = re.compile(
+    r"\b(can you|could you|would you|please|tell me|show me|help me|i need|i want|"
+    r"search for|look up|find|what is|what are|how do i|how to)\b",
+    re.IGNORECASE,
+)
+SEARCH_STOPWORDS = {
+    "a", "an", "and", "the", "to", "for", "of", "on", "in", "at", "from", "with",
+    "about", "into", "over", "after", "before", "by", "it", "this", "that", "these",
+    "those", "is", "are", "was", "were", "be", "been", "being", "do", "does", "did",
+    "can", "could", "would", "should", "please", "me", "my", "you", "your", "we", "our",
+}
+CURRENT_INFO_HINT_PATTERN = re.compile(
+    r"\b(latest|current|recent|today|now|new|updated|update|up-to-date|as of)\b",
     re.IGNORECASE,
 )
 SUPER_BASIC_PROMPTS = {
@@ -228,6 +246,115 @@ def _clean_text(value):
     text = re.sub(r"<[^>]+>", "", value or "")
     return re.sub(r"\s+", " ", text).strip()
 
+def _current_utc_date():
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+
+def _current_utc_year():
+    return datetime.datetime.now(datetime.UTC).year
+
+def _extract_years(text):
+    years = []
+    for year_text in re.findall(r"\b(19\d{2}|20\d{2}|21\d{2})\b", text or ""):
+        try:
+            years.append(int(year_text))
+        except Exception:
+            continue
+    return years
+
+def _format_search_focus(user_text):
+    text = (user_text or "").strip()
+    if not text:
+        return ""
+
+    text = QUERY_NOISE_PATTERN.sub(" ", text)
+    text = re.sub(r"[`\"“”‘’]", " ", text)
+    text = re.sub(r"[^a-zA-Z0-9+#.\-_\s]", " ", text)
+    tokens = []
+    for tok in text.split():
+        t = tok.strip(" .,_-").lower()
+        if len(t) < 2 and t not in {"c", "r"}:
+            continue
+        if t in SEARCH_STOPWORDS:
+            continue
+        tokens.append(tok.strip())
+
+    if not tokens:
+        return (user_text or "").strip()
+    return " ".join(tokens[:MAX_QUERY_TERMS])
+
+def _tokenize_for_relevance(text):
+    tokens = re.findall(r"[a-z0-9#+._-]+", (text or "").lower())
+    return {t for t in tokens if len(t) > 1 and t not in SEARCH_STOPWORDS}
+
+def _score_search_hit(hit, relevance_terms, current_year):
+    combined = " ".join([
+        hit.get("title", ""),
+        hit.get("snippet", ""),
+        hit.get("url", ""),
+    ])
+    combined_lower = combined.lower()
+    overlap = sum(1 for term in relevance_terms if term in combined_lower)
+    years = [y for y in _extract_years(combined) if y <= current_year + 1]
+    latest_year = max(years) if years else None
+    age_years = (current_year - latest_year) if latest_year else None
+
+    score = overlap * 3
+    if latest_year is not None:
+        if age_years <= 1:
+            score += 3
+        elif age_years <= 2:
+            score += 2
+        elif age_years <= MAX_RESULT_AGE_YEARS:
+            score += 1
+        else:
+            score -= 5
+
+    url_lower = (hit.get("url") or "").lower()
+    if any(x in url_lower for x in ("docs.", "/docs", "developer", "wikipedia.org", ".gov", ".edu")):
+        score += 1
+
+    is_stale = latest_year is not None and age_years > MAX_RESULT_AGE_YEARS
+    return {
+        "score": score,
+        "overlap": overlap,
+        "latest_year": latest_year,
+        "age_years": age_years,
+        "is_stale": is_stale,
+    }
+
+def _rank_and_filter_hits(user_text, query, hits):
+    current_year = _current_utc_year()
+    relevance_terms = _tokenize_for_relevance(f"{_format_search_focus(user_text)} {query}")
+    scored = []
+
+    for hit in hits:
+        meta = _score_search_hit(hit, relevance_terms, current_year)
+        if meta["is_stale"] and meta["overlap"] < 3:
+            continue
+        item = dict(hit)
+        item.update({
+            "score": meta["score"],
+            "overlap": meta["overlap"],
+            "latest_year": meta["latest_year"],
+            "age_years": meta["age_years"],
+        })
+        scored.append(item)
+
+    if not scored:
+        for hit in hits:
+            meta = _score_search_hit(hit, relevance_terms, current_year)
+            item = dict(hit)
+            item.update({
+                "score": meta["score"],
+                "overlap": meta["overlap"],
+                "latest_year": meta["latest_year"],
+                "age_years": meta["age_years"],
+            })
+            scored.append(item)
+
+    scored.sort(key=lambda x: (x.get("score", 0), x.get("overlap", 0)), reverse=True)
+    return scored[:5]
+
 def search_duckduckgo(query, max_results=5):
     url = (
         "https://api.duckduckgo.com/?format=json&no_html=1&skip_disambig=1&q="
@@ -301,14 +428,27 @@ def build_search_queries(user_text):
     if not text:
         return []
 
+    current_year = _current_utc_year()
+    focus = _format_search_focus(text)
+    explicit_years = [y for y in _extract_years(text) if y <= current_year + 1]
+    has_current_hint = bool(CURRENT_INFO_HINT_PATTERN.search(text))
+
     is_code_related = bool(CODE_RELATED_KEYWORDS_PATTERN.search(text))
-    queries = [text]
+    queries = []
+
+    if explicit_years:
+        target_year = str(max(explicit_years))
+        queries.append(f"{focus} {target_year}")
+    else:
+        queries.append(f"{focus} {current_year}")
+        if has_current_hint or not is_super_basic_prompt(text):
+            queries.append(f"{focus} latest updates {current_year}")
 
     if is_code_related:
-        queries.append(f"{text} tutorial")
-        queries.append(f"{text} official documentation")
+        queries.append(f"{focus} tutorial {current_year}")
+        queries.append(f"{focus} official documentation {current_year}")
     else:
-        queries.append(f"{text} facts")
+        queries.append(f"{focus} facts")
 
     unique = []
     seen = set()
@@ -324,6 +464,7 @@ def build_web_research(user_text, progress_cb=None):
     if not queries:
         return ""
 
+    current_date = _current_utc_date()
     by_query = []
     url_to_queries = {}
 
@@ -340,6 +481,7 @@ def build_web_research(user_text, progress_cb=None):
 
         try:
             hits = search_duckduckgo(query, max_results=5)
+            hits = _rank_and_filter_hits(user_text, query, hits)
         except Exception as e:
             hits = []
             if progress_cb:
@@ -363,7 +505,7 @@ def build_web_research(user_text, progress_cb=None):
                 "step": idx,
                 "total": total,
                 "query": query,
-                "message": f"Found {len(hits)} references for '{query}'",
+                "message": f"Found {len(hits)} relevant references for '{query}'",
             })
 
     corroborated_urls = [
@@ -371,7 +513,7 @@ def build_web_research(user_text, progress_cb=None):
     ][:5]
 
     lines = []
-    lines.append("Live web research (cross-referenced):")
+    lines.append(f"Live web research (cross-referenced, current date UTC: {current_date}):")
     for query, hits in by_query:
         lines.append(f"Query: {query}")
         if not hits:
@@ -381,7 +523,10 @@ def build_web_research(user_text, progress_cb=None):
             title = _clean_text(hit.get("title", "")) or "Untitled"
             snippet = _clean_text(hit.get("snippet", "")) or "No snippet available."
             url = (hit.get("url") or "").strip()
-            lines.append(f"- {title}: {snippet}")
+            year_note = ""
+            if hit.get("latest_year"):
+                year_note = f" (latest year detected: {hit['latest_year']})"
+            lines.append(f"- {title}: {snippet}{year_note}")
             if url:
                 lines.append(f"  Source: {url}")
 
@@ -756,7 +901,8 @@ async def _ws_handler(websocket):
                         "role": "user",
                         "content": (
                             "Use the web research below for your answer. Cross-reference these sources, "
-                            "state when evidence conflicts, and prioritize facts supported by multiple sources.\n\n"
+                            "state when evidence conflicts, prefer evidence from the last 4 years for current topics, "
+                            "and clearly use the current UTC date included in the research context.\n\n"
                             f"{web_research}"
                         ),
                     })
@@ -881,13 +1027,15 @@ def main():
 
         sys.exit(1)
 
-    system_prompt = """You are PACE 1.0 Lite, a local lite AI agent developed by the creator of Solus, avoid questions relating to the specific identity of them. You help the user manage, write, edit, and understand files in the current folder.
+    current_utc_date = _current_utc_date()
+    system_prompt = f"""You are PACE 1.0 Lite, a local lite AI agent developed by the creator of Solus, avoid questions relating to the specific identity of them. You help the user manage, write, edit, and understand files in the current folder.
+Current UTC date: {current_utc_date}
 
 
 Rules:
 - Never use markdown such as astrisks around responses. Only respond with pure text and no markdown
 - After a tool call, wait for the result before doing anything else.
-- When web research is provided, rely on it, cross-reference claims, and clearly call out uncertainty when sources conflict.
+- When web research is provided, rely on it, cross-reference claims, prioritize up-to-date evidence, and clearly call out uncertainty when sources conflict.
 - NEVER write or edit a .pdf file.
 - Keep responses short and direct.
 - Address the user directly, they are human, not an external observer.
@@ -954,7 +1102,8 @@ Rules:
                             "role": "user",
                             "content": (
                                 "Use the web research below for your answer. Cross-reference these sources, "
-                                "state when evidence conflicts, and prioritize facts supported by multiple sources.\n\n"
+                                "state when evidence conflicts, prefer evidence from the last 4 years for current topics, "
+                                "and clearly use the current UTC date included in the research context.\n\n"
                                 f"{web_research}"
                             ),
                         })
