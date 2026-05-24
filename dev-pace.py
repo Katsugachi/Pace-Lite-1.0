@@ -255,10 +255,7 @@ def _current_utc_year():
 def _extract_years(text):
     years = []
     for year_text in re.findall(r"\b(19\d{2}|20\d{2}|21\d{2})\b", text or ""):
-        try:
-            years.append(int(year_text))
-        except Exception:
-            continue
+        years.append(int(year_text))
     return years
 
 def _format_search_focus(user_text):
@@ -889,7 +886,7 @@ async def _ws_handler(websocket):
                     try:
                         task = asyncio.get_running_loop().create_task(websocket.send(json.dumps(event)))
                         search_progress_tasks.append(task)
-                    except Exception:
+                    except RuntimeError:
                         # Ignore progress-send scheduling failures (e.g. websocket closing).
                         pass
 
