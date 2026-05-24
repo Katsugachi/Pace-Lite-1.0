@@ -43,12 +43,14 @@ MAX_RESEARCH_TEXT_LENGTH = 6500
 INTERNET_CHECK_CACHE_SECONDS = 20
 MAX_QUERY_TERMS = 10
 MAX_RESULT_AGE_YEARS = 4
-MAX_HISTORY_CHAR_BUDGET = 45000
+MAX_HISTORY_CHARS = 45000
 WEB_RESEARCH_MIN_SOURCES = 5
 WEB_RESEARCH_MAX_SOURCES = 6
 WEB_SOURCE_FETCH_TIMEOUT_SECONDS = 8
 WEB_SOURCE_MAX_BYTES = 180000
 WEB_SOURCE_SNIPPET_CHARS = 420
+MIN_HISTORY_CHAR_BUDGET = 1000
+HISTORY_MESSAGE_OVERHEAD_CHARS = 32
 CODE_RELATED_KEYWORDS_PATTERN = re.compile(
     r"\b(code|python|javascript|java|c\+\+|cpp|tutorial|error|bug|function|api|class|framework|syntax|compile|debug|library|package|module|import|export|variable|loop|array|database|sql|html|css|react|node|git)\b",
     re.IGNORECASE,
@@ -250,9 +252,46 @@ def _flatten_related_topics(items):
     return out
 
 def _clean_text(value):
-    text = html.unescape(value or "")
+    try:
+        text = html.unescape(value or "")
+    except Exception:
+        text = value or ""
     text = re.sub(r"<[^>]+>", "", text)
     return re.sub(r"\s+", " ", text).strip()
+
+def _truncate_with_ellipsis(text, max_chars):
+    value = (text or "").strip()
+    if max_chars <= 0:
+        return ""
+    if len(value) <= max_chars:
+        return value
+    if max_chars <= 3:
+        return value[:max_chars]
+    return value[:max_chars - 3].rstrip() + "..."
+
+def _strip_tag_block(html_text, tag_name):
+    text = html_text or ""
+    lower = text.lower()
+    open_marker = f"<{tag_name}"
+    close_marker = f"</{tag_name}"
+    idx = 0
+    out = []
+
+    while True:
+        start = lower.find(open_marker, idx)
+        if start < 0:
+            out.append(text[idx:])
+            break
+        out.append(text[idx:start])
+        close_start = lower.find(close_marker, start + len(open_marker))
+        if close_start < 0:
+            break
+        close_end = lower.find(">", close_start + len(close_marker))
+        if close_end < 0:
+            break
+        idx = close_end + 1
+
+    return "".join(out)
 
 def _current_utc_date():
     return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
@@ -358,7 +397,7 @@ def _rank_and_filter_hits(user_text, query, hits):
             scored.append(item)
 
     scored.sort(key=lambda x: (x.get("score", 0), x.get("overlap", 0)), reverse=True)
-    return scored[:6]
+    return scored[:WEB_RESEARCH_MAX_SOURCES]
 
 def _normalize_search_result_url(url):
     raw = (url or "").strip()
@@ -380,8 +419,8 @@ def _normalize_search_result_url(url):
 
 def _extract_source_context_from_html(page_html):
     text = page_html or ""
-    text = re.sub(r"<script\b[^>]*>.*?</script>", " ", text, flags=re.IGNORECASE | re.DOTALL)
-    text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    text = _strip_tag_block(text, "script")
+    text = _strip_tag_block(text, "style")
 
     title_match = re.search(r"<title[^>]*>(.*?)</title>", text, flags=re.IGNORECASE | re.DOTALL)
     title = _clean_text(title_match.group(1)) if title_match else ""
@@ -393,13 +432,10 @@ def _extract_source_context_from_html(page_html):
     )
     description = _clean_text(desc_match.group(1)) if desc_match else ""
 
-    body_text = _clean_text(text)
-    if len(body_text) > WEB_SOURCE_SNIPPET_CHARS:
-        body_text = body_text[:WEB_SOURCE_SNIPPET_CHARS].rstrip() + "..."
-
-    summary = description or body_text
-    if len(summary) > WEB_SOURCE_SNIPPET_CHARS:
-        summary = summary[:WEB_SOURCE_SNIPPET_CHARS].rstrip() + "..."
+    summary_source = description
+    if not summary_source:
+        summary_source = _clean_text(text)
+    summary = _truncate_with_ellipsis(summary_source, WEB_SOURCE_SNIPPET_CHARS)
 
     return {
         "title": title or "Untitled source",
@@ -411,12 +447,15 @@ def fetch_source_context(url):
     if not normalized:
         return None
 
-    req = urllib.request.Request(normalized, headers={"User-Agent": "PACE-Lite/1.0"})
-    with urllib.request.urlopen(req, timeout=WEB_SOURCE_FETCH_TIMEOUT_SECONDS) as response:
-        payload = response.read(WEB_SOURCE_MAX_BYTES).decode("utf-8", errors="replace")
-    context = _extract_source_context_from_html(payload)
-    context["url"] = normalized
-    return context
+    try:
+        req = urllib.request.Request(normalized, headers={"User-Agent": "PACE-Lite/1.0"})
+        with urllib.request.urlopen(req, timeout=WEB_SOURCE_FETCH_TIMEOUT_SECONDS) as response:
+            payload = response.read(WEB_SOURCE_MAX_BYTES).decode("utf-8", errors="replace")
+        context = _extract_source_context_from_html(payload)
+        context["url"] = normalized
+        return context
+    except Exception:
+        return None
 
 def search_duckduckgo(query, max_results=5):
     url = (
@@ -982,11 +1021,15 @@ def _enforce_system_prompt_and_trim_history(history, system_prompt):
             continue
         non_system_messages.append(msg)
 
-    budget = max(1000, MAX_HISTORY_CHAR_BUDGET - len(required_system))
+    budget = max(MIN_HISTORY_CHAR_BUDGET, MAX_HISTORY_CHARS - len(required_system))
     kept_reversed = []
     used = 0
     for msg in reversed(non_system_messages):
-        msg_len = len(str(msg.get("role", ""))) + len(str(msg.get("content", ""))) + 32
+        msg_len = (
+            len(str(msg.get("role", "")))
+            + len(str(msg.get("content", "")))
+            + HISTORY_MESSAGE_OVERHEAD_CHARS
+        )
         if kept_reversed and (used + msg_len) > budget:
             break
         kept_reversed.append(msg)
