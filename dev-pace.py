@@ -3,10 +3,13 @@ import os
 import sys
 import subprocess
 import urllib.request
+import urllib.parse
 import re
 import threading
 import json
 import asyncio
+import time
+import datetime
 from pathlib import Path
 
 try:
@@ -34,13 +37,46 @@ except Exception:
 MODEL_NAME = "gemma-3-1b-it-Q4_K_M.gguf"
 MODEL_URL = "https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf"
 PACE_DIR_NAME = ".pace_agent"
+MAX_BASIC_PROMPT_CHAR_COUNT = 12
+MAX_RESEARCH_TEXT_LENGTH = 6500
+INTERNET_CHECK_CACHE_SECONDS = 20
+MAX_QUERY_TERMS = 10
+MAX_RESULT_AGE_YEARS = 4
+CODE_RELATED_KEYWORDS_PATTERN = re.compile(
+    r"\b(code|python|javascript|java|c\+\+|cpp|tutorial|error|bug|function|api|class|framework|syntax|compile|debug|library|package|module|import|export|variable|loop|array|database|sql|html|css|react|node|git)\b",
+    re.IGNORECASE,
+)
+QUERY_NOISE_PATTERN = re.compile(
+    r"\b(can you|could you|would you|please|tell me|show me|help me|i need|i want|"
+    r"search for|look up|find|what is|what are|how do i|how to)\b",
+    re.IGNORECASE,
+)
+SEARCH_STOPWORDS = {
+    "a", "an", "and", "the", "to", "for", "of", "on", "in", "at", "from", "with",
+    "about", "into", "over", "after", "before", "by", "it", "this", "that", "these",
+    "those", "is", "are", "was", "were", "be", "been", "being", "do", "does", "did",
+    "can", "could", "would", "should", "please", "me", "my", "you", "your", "we", "our",
+}
+CURRENT_INFO_HINT_PATTERN = re.compile(
+    r"\b(latest|current|recent|today|now|new|updated|update|up-to-date|as of)\b",
+    re.IGNORECASE,
+)
+SUPER_BASIC_PROMPTS = {
+    "hi", "hello", "hey", "yo", "sup", "what's up", "how are you",
+    "thanks", "thank you", "ok", "okay", "cool", "nice", "bye", "goodbye",
+    "howdy", "hiya", "cheers", "good morning", "good afternoon", "good evening", "see you"
+}
 
 # Shared state for WebSocket server
 _ws_state = {
     "llm": None,
     "history": [],
     "system_prompt": "",
-    "lock": threading.Lock(),
+    "internet_available": False,
+    "internet_last_checked": 0.0,
+    # Re-entrant lock avoids deadlock when handlers refresh internet status
+    # while already holding shared-state lock for history updates.
+    "lock": threading.RLock(),
 }
 
 # Colors for terminal
@@ -169,6 +205,354 @@ def is_safe_path(base_dir, target_path):
         return os.path.commonpath([str(base_dir), str(target_path)]) == str(base_dir)
     except Exception:
         return False
+
+def detect_internet_access(timeout=3):
+    try:
+        req = urllib.request.Request(
+            "https://www.google.com/generate_204",
+            headers={"User-Agent": "PACE-Lite/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+def get_internet_status(force=False):
+    with _ws_state["lock"]:
+        last_checked = _ws_state.get("internet_last_checked", 0.0)
+        cached = _ws_state.get("internet_available", False)
+
+    if not force and (time.time() - last_checked) < INTERNET_CHECK_CACHE_SECONDS:
+        return cached
+
+    current = detect_internet_access()
+
+    with _ws_state["lock"]:
+        _ws_state["internet_available"] = current
+        _ws_state["internet_last_checked"] = time.time()
+
+    return current
+
+def _flatten_related_topics(items):
+    out = []
+    for item in items or []:
+        if isinstance(item, dict) and "Topics" in item:
+            out.extend(_flatten_related_topics(item.get("Topics")))
+        else:
+            out.append(item)
+    return out
+
+def _clean_text(value):
+    text = re.sub(r"<[^>]+>", "", value or "")
+    return re.sub(r"\s+", " ", text).strip()
+
+def _current_utc_date():
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+
+def _current_utc_year():
+    return datetime.datetime.now(datetime.UTC).year
+
+def _extract_years(text):
+    years = []
+    for year_text in re.findall(r"\b(19\d{2}|20\d{2}|21\d{2})\b", text or ""):
+        years.append(int(year_text))
+    return years
+
+def _format_search_focus(user_text):
+    text = (user_text or "").strip()
+    if not text:
+        return ""
+
+    text = QUERY_NOISE_PATTERN.sub(" ", text)
+    text = re.sub(r"[`\"“”‘’]", " ", text)
+    text = re.sub(r"[^a-zA-Z0-9+#.\-_\s]", " ", text)
+    tokens = []
+    for tok in text.split():
+        t = tok.strip(" .,_-").lower()
+        if len(t) < 2 and t not in {"c", "r"}:
+            continue
+        if t in SEARCH_STOPWORDS:
+            continue
+        tokens.append(tok.strip())
+
+    if not tokens:
+        return (user_text or "").strip()
+    return " ".join(tokens[:MAX_QUERY_TERMS])
+
+def _tokenize_for_relevance(text):
+    tokens = re.findall(r"[a-z0-9#+._-]+", (text or "").lower())
+    return {t for t in tokens if len(t) > 1 and t not in SEARCH_STOPWORDS}
+
+def _score_search_hit(hit, relevance_terms, current_year):
+    combined = " ".join([
+        hit.get("title", ""),
+        hit.get("snippet", ""),
+        hit.get("url", ""),
+    ])
+    combined_lower = combined.lower()
+    overlap = sum(1 for term in relevance_terms if term in combined_lower)
+    years = [y for y in _extract_years(combined) if y <= current_year + 1]
+    latest_year = max(years) if years else None
+    age_years = (current_year - latest_year) if latest_year else None
+
+    score = overlap * 3
+    if latest_year is not None:
+        if age_years <= 1:
+            score += 3
+        elif age_years <= 2:
+            score += 2
+        elif age_years <= MAX_RESULT_AGE_YEARS:
+            score += 1
+        else:
+            score -= 5
+
+    url_lower = (hit.get("url") or "").lower()
+    if any(x in url_lower for x in ("docs.", "/docs", "developer", "wikipedia.org", ".gov", ".edu")):
+        score += 1
+
+    is_stale = latest_year is not None and age_years > MAX_RESULT_AGE_YEARS
+    return {
+        "score": score,
+        "overlap": overlap,
+        "latest_year": latest_year,
+        "age_years": age_years,
+        "is_stale": is_stale,
+    }
+
+def _rank_and_filter_hits(user_text, query, hits):
+    current_year = _current_utc_year()
+    relevance_terms = _tokenize_for_relevance(f"{_format_search_focus(user_text)} {query}")
+    scored = []
+
+    for hit in hits:
+        meta = _score_search_hit(hit, relevance_terms, current_year)
+        if meta["is_stale"] and meta["overlap"] < 3:
+            continue
+        item = dict(hit)
+        item.update({
+            "score": meta["score"],
+            "overlap": meta["overlap"],
+            "latest_year": meta["latest_year"],
+            "age_years": meta["age_years"],
+        })
+        scored.append(item)
+
+    if not scored:
+        for hit in hits:
+            meta = _score_search_hit(hit, relevance_terms, current_year)
+            item = dict(hit)
+            item.update({
+                "score": meta["score"],
+                "overlap": meta["overlap"],
+                "latest_year": meta["latest_year"],
+                "age_years": meta["age_years"],
+            })
+            scored.append(item)
+
+    scored.sort(key=lambda x: (x.get("score", 0), x.get("overlap", 0)), reverse=True)
+    return scored[:5]
+
+def search_duckduckgo(query, max_results=5):
+    url = (
+        "https://api.duckduckgo.com/?format=json&no_html=1&skip_disambig=1&q="
+        + urllib.parse.quote(query)
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": "PACE-Lite/1.0"})
+    with urllib.request.urlopen(req, timeout=10) as response:
+        payload = response.read().decode("utf-8", errors="replace")
+
+    data = json.loads(payload)
+    results = []
+
+    abstract = _clean_text(data.get("AbstractText"))
+    if abstract:
+        results.append({
+            "title": _clean_text(data.get("Heading")) or query,
+            "snippet": abstract,
+            "url": data.get("AbstractURL", ""),
+        })
+
+    for item in data.get("Results", []):
+        snippet = _clean_text(item.get("Text"))
+        if not snippet:
+            continue
+        results.append({
+            "title": snippet.split(" - ")[0][:120],
+            "snippet": snippet,
+            "url": item.get("FirstURL", ""),
+        })
+
+    for item in _flatten_related_topics(data.get("RelatedTopics")):
+        if not isinstance(item, dict):
+            continue
+        snippet = _clean_text(item.get("Text"))
+        if not snippet:
+            continue
+        results.append({
+            "title": snippet.split(" - ")[0][:120],
+            "snippet": snippet,
+            "url": item.get("FirstURL", ""),
+        })
+
+    deduped = []
+    seen = set()
+    for item in results:
+        key = (item.get("url", "").strip(), item.get("snippet", "").strip().lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+        if len(deduped) >= max_results:
+            break
+
+    return deduped
+
+def is_super_basic_prompt(text):
+    lowered = (text or "").strip().lower()
+    if not lowered:
+        return True
+
+    if lowered in SUPER_BASIC_PROMPTS:
+        return True
+
+    if len(lowered) <= MAX_BASIC_PROMPT_CHAR_COUNT and re.fullmatch(r"[\w\s!?.,'’-]+", lowered, re.UNICODE):
+        return True
+
+    return False
+
+def build_search_queries(user_text):
+    text = (user_text or "").strip()
+    if not text:
+        return []
+
+    current_year = _current_utc_year()
+    focus = _format_search_focus(text)
+    explicit_years = [y for y in _extract_years(text) if y <= current_year + 1]
+    has_current_hint = bool(CURRENT_INFO_HINT_PATTERN.search(text))
+
+    is_code_related = bool(CODE_RELATED_KEYWORDS_PATTERN.search(text))
+    queries = []
+
+    if explicit_years:
+        target_year = str(max(explicit_years))
+        queries.append(f"{focus} {target_year}")
+    else:
+        queries.append(f"{focus} {current_year}")
+        if has_current_hint or not is_super_basic_prompt(text):
+            queries.append(f"{focus} latest updates {current_year}")
+
+    if is_code_related:
+        queries.append(f"{focus} tutorial {current_year}")
+        queries.append(f"{focus} official documentation {current_year}")
+    else:
+        queries.append(f"{focus} facts")
+
+    unique = []
+    seen = set()
+    for q in queries:
+        key = q.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(q.strip())
+    return unique[:3]
+
+def build_web_research(user_text, progress_cb=None):
+    queries = build_search_queries(user_text)
+    if not queries:
+        return ""
+
+    current_date = _current_utc_date()
+    by_query = []
+    url_to_queries = {}
+
+    total = len(queries)
+    for idx, query in enumerate(queries, start=1):
+        if progress_cb:
+            progress_cb({
+                "phase": "searching",
+                "step": idx,
+                "total": total,
+                "query": query,
+                "message": f"Searching web ({idx}/{total}): {query}",
+            })
+
+        try:
+            hits = search_duckduckgo(query, max_results=5)
+            hits = _rank_and_filter_hits(user_text, query, hits)
+        except Exception as e:
+            hits = []
+            if progress_cb:
+                progress_cb({
+                    "phase": "error",
+                    "step": idx,
+                    "total": total,
+                    "query": query,
+                    "message": f"Search failed for '{query}': {e}",
+                })
+
+        for hit in hits:
+            url = (hit.get("url") or "").strip()
+            if url:
+                url_to_queries.setdefault(url, set()).add(query)
+
+        by_query.append((query, hits))
+        if progress_cb:
+            progress_cb({
+                "phase": "results",
+                "step": idx,
+                "total": total,
+                "query": query,
+                "message": f"Found {len(hits)} relevant references for '{query}'",
+            })
+
+    corroborated_urls = [
+        url for url, matched_queries in url_to_queries.items() if len(matched_queries) > 1
+    ][:5]
+
+    lines = []
+    lines.append(f"Live web research (cross-referenced, current date UTC: {current_date}):")
+    for query, hits in by_query:
+        lines.append(f"Query: {query}")
+        if not hits:
+            lines.append("- No reliable references returned.")
+            continue
+        for hit in hits[:3]:
+            title = _clean_text(hit.get("title", "")) or "Untitled"
+            snippet = _clean_text(hit.get("snippet", "")) or "No snippet available."
+            url = (hit.get("url") or "").strip()
+            year_note = ""
+            if hit.get("latest_year"):
+                year_note = f" (latest year detected: {hit['latest_year']})"
+            lines.append(f"- {title}: {snippet}{year_note}")
+            if url:
+                lines.append(f"  Source: {url}")
+
+    if corroborated_urls:
+        lines.append("Cross-reference matches (same source appeared in multiple searches):")
+        for url in corroborated_urls:
+            lines.append(f"- {url}")
+    else:
+        lines.append("Cross-reference matches: no repeated sources found across queries.")
+
+    research_text = "\n".join(lines).strip()
+    if len(research_text) > MAX_RESEARCH_TEXT_LENGTH:
+        trimmed = research_text[:MAX_RESEARCH_TEXT_LENGTH]
+        split_at = max(trimmed.rfind("\n"), trimmed.rfind(". "))
+        # If split_at <= 0, no safe boundary was found and we keep raw truncation.
+        if split_at > 0:
+            trimmed = trimmed[:split_at].rstrip()
+        research_text = trimmed + "\n... [truncated]"
+
+    if progress_cb:
+        progress_cb({
+            "phase": "complete",
+            "step": total,
+            "total": total,
+            "query": "",
+            "message": "Web research complete.",
+        })
+
+    return research_text
 
 # ── Tool functions ────────────────────────────────────────────────────────────
 
@@ -451,6 +835,11 @@ def _build_prompt(history):
 
 async def _ws_handler(websocket):
     """Handle one browser client connection."""
+    await websocket.send(json.dumps({
+        "type": "internet_status",
+        "available": get_internet_status(),
+    }))
+
     async for raw in websocket:
         try:
             msg = json.loads(raw)
@@ -480,6 +869,49 @@ async def _ws_handler(websocket):
 
             history.append({"role": "user", "content": user_text})
             user_requested_tool = user_explicitly_requested_tool(user_text)
+
+            internet_available = get_internet_status(force=True)
+            await websocket.send(json.dumps({
+                "type": "internet_status",
+                "available": internet_available,
+            }))
+
+            should_search = internet_available and not is_super_basic_prompt(user_text)
+            if should_search:
+                search_progress_tasks = []
+
+                def ws_progress(payload):
+                    event = {"type": "search_progress"}
+                    event.update(payload)
+                    try:
+                        task = asyncio.get_running_loop().create_task(websocket.send(json.dumps(event)))
+                        search_progress_tasks.append(task)
+                    except RuntimeError:
+                        # Ignore progress-send scheduling failures (e.g. websocket closing).
+                        pass
+
+                web_research = build_web_research(user_text, progress_cb=ws_progress)
+                if search_progress_tasks:
+                    await asyncio.gather(*search_progress_tasks, return_exceptions=True)
+                if web_research:
+                    history.append({
+                        "role": "user",
+                        "content": (
+                            "Use the web research below for your answer. Cross-reference these sources, "
+                            "state when evidence conflicts, prefer evidence from the last 4 years for current topics, "
+                            "and clearly use the current UTC date included in the research context.\n\n"
+                            f"{web_research}"
+                        ),
+                    })
+            elif not internet_available:
+                await websocket.send(json.dumps({
+                    "type": "search_progress",
+                    "phase": "offline",
+                    "step": 0,
+                    "total": 0,
+                    "query": "",
+                    "message": "Internet not available. Falling back to local model knowledge.",
+                }))
 
             for _ in range(3):
                 prompt = _build_prompt(history)
@@ -592,12 +1024,15 @@ def main():
 
         sys.exit(1)
 
-    system_prompt = """You are PACE 1.0 Lite, a local lite AI agent developed by the creator of Solus, avoid questions relating to the specific identity of them. You help the user manage, write, edit, and understand files in the current folder.
+    current_utc_date = _current_utc_date()
+    system_prompt = f"""You are PACE 1.0 Lite, a local lite AI agent developed by the creator of Solus, avoid questions relating to the specific identity of them. You help the user manage, write, edit, and understand files in the current folder.
+Current UTC date: {current_utc_date}
 
 
 Rules:
 - Never use markdown such as astrisks around responses. Only respond with pure text and no markdown
 - After a tool call, wait for the result before doing anything else.
+- When web research is provided, rely on it, cross-reference claims, prioritize up-to-date evidence, and clearly call out uncertainty when sources conflict.
 - NEVER write or edit a .pdf file.
 - Keep responses short and direct.
 - Address the user directly, they are human, not an external observer.
@@ -609,10 +1044,13 @@ Rules:
         {"role": "system", "content": system_prompt}
     ]
 
-    # Share state with WS server
+    # Share state with WS server. RLock is required because internet checks
+    # also consult shared state while request handlers already hold this lock.
     _ws_state["llm"] = llm
     _ws_state["history"] = history
     _ws_state["system_prompt"] = system_prompt
+    _ws_state["internet_available"] = get_internet_status(force=True)
+    _ws_state["internet_last_checked"] = time.time()
 
     # Start WebSocket server in background thread
     if has_ws:
@@ -624,6 +1062,7 @@ Rules:
 
     print(f"\n{Colors.BOLD}Welcome to PACE 1.0 Lite!{Colors.RESET}")
     print("I can help understand an extremely broad range of information and answer questions locally")
+    print(f"Internet access: {Colors.GREEN if _ws_state['internet_available'] else Colors.YELLOW}{'Available' if _ws_state['internet_available'] else 'Unavailable'}{Colors.RESET}")
     print(f"Current working folder: {Colors.CYAN}{Path(__file__).resolve().parent}{Colors.RESET}")
     print("Type 'exit' or 'quit' to close.\n")
 
@@ -643,6 +1082,31 @@ Rules:
                 history.append({"role": "user", "content": user_input})
 
                 user_requested_tool = user_explicitly_requested_tool(user_input)
+                internet_available = get_internet_status(force=True)
+                should_search = internet_available and not is_super_basic_prompt(user_input)
+
+                if should_search:
+                    print(f"{Colors.BLUE}Web search: enabled for this prompt{Colors.RESET}")
+
+                    def terminal_progress(payload):
+                        msg = payload.get("message", "").strip()
+                        if msg:
+                            print(f"{Colors.CYAN}{msg}{Colors.RESET}")
+
+                    web_research = build_web_research(user_input, progress_cb=terminal_progress)
+                    if web_research:
+                        history.append({
+                            "role": "user",
+                            "content": (
+                                "Use the web research below for your answer. Cross-reference these sources, "
+                                "state when evidence conflicts, prefer evidence from the last 4 years for current topics, "
+                                "and clearly use the current UTC date included in the research context.\n\n"
+                                f"{web_research}"
+                            ),
+                        })
+                elif not internet_available:
+                    print(f"{Colors.YELLOW}Internet unavailable. Using local model knowledge only.{Colors.RESET}")
+
                 max_steps = 3
 
                 for step in range(max_steps):
