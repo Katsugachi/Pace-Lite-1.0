@@ -3,10 +3,12 @@ import os
 import sys
 import subprocess
 import urllib.request
+import urllib.parse
 import re
 import threading
 import json
 import asyncio
+import time
 from pathlib import Path
 
 try:
@@ -40,7 +42,9 @@ _ws_state = {
     "llm": None,
     "history": [],
     "system_prompt": "",
-    "lock": threading.Lock(),
+    "internet_available": False,
+    "internet_last_checked": 0.0,
+    "lock": threading.RLock(),
 }
 
 # Colors for terminal
@@ -169,6 +173,229 @@ def is_safe_path(base_dir, target_path):
         return os.path.commonpath([str(base_dir), str(target_path)]) == str(base_dir)
     except Exception:
         return False
+
+def detect_internet_access(timeout=3):
+    try:
+        req = urllib.request.Request(
+            "https://www.google.com/generate_204",
+            headers={"User-Agent": "PACE-Lite/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+def get_internet_status(force=False):
+    with _ws_state["lock"]:
+        last_checked = _ws_state.get("internet_last_checked", 0.0)
+        cached = _ws_state.get("internet_available", False)
+
+    if not force and (time.time() - last_checked) < 20:
+        return cached
+
+    current = detect_internet_access()
+
+    with _ws_state["lock"]:
+        _ws_state["internet_available"] = current
+        _ws_state["internet_last_checked"] = time.time()
+
+    return current
+
+def _flatten_related_topics(items):
+    out = []
+    for item in items or []:
+        if isinstance(item, dict) and "Topics" in item:
+            out.extend(_flatten_related_topics(item.get("Topics")))
+        else:
+            out.append(item)
+    return out
+
+def _clean_text(value):
+    text = re.sub(r"<[^>]+>", "", value or "")
+    return re.sub(r"\s+", " ", text).strip()
+
+def search_duckduckgo(query, max_results=5):
+    url = (
+        "https://api.duckduckgo.com/?format=json&no_html=1&skip_disambig=1&q="
+        + urllib.parse.quote(query)
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": "PACE-Lite/1.0"})
+    with urllib.request.urlopen(req, timeout=10) as response:
+        payload = response.read().decode("utf-8", errors="replace")
+
+    data = json.loads(payload)
+    results = []
+
+    abstract = _clean_text(data.get("AbstractText"))
+    if abstract:
+        results.append({
+            "title": _clean_text(data.get("Heading")) or query,
+            "snippet": abstract,
+            "url": data.get("AbstractURL", ""),
+        })
+
+    for item in data.get("Results", []):
+        snippet = _clean_text(item.get("Text"))
+        if not snippet:
+            continue
+        results.append({
+            "title": snippet.split(" - ")[0][:120],
+            "snippet": snippet,
+            "url": item.get("FirstURL", ""),
+        })
+
+    for item in _flatten_related_topics(data.get("RelatedTopics")):
+        if not isinstance(item, dict):
+            continue
+        snippet = _clean_text(item.get("Text"))
+        if not snippet:
+            continue
+        results.append({
+            "title": snippet.split(" - ")[0][:120],
+            "snippet": snippet,
+            "url": item.get("FirstURL", ""),
+        })
+
+    deduped = []
+    seen = set()
+    for item in results:
+        key = (item.get("url", "").strip(), item.get("snippet", "").strip().lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+        if len(deduped) >= max_results:
+            break
+
+    return deduped
+
+def is_super_basic_prompt(text):
+    lowered = (text or "").strip().lower()
+    if not lowered:
+        return True
+
+    super_basic = {
+        "hi", "hello", "hey", "yo", "sup", "what's up", "how are you",
+        "thanks", "thank you", "ok", "okay", "cool", "nice", "bye", "goodbye"
+    }
+    if lowered in super_basic:
+        return True
+
+    if len(lowered) <= 12 and re.fullmatch(r"[a-z\s!?.,']+", lowered):
+        return True
+
+    return False
+
+def build_search_queries(user_text):
+    text = (user_text or "").strip()
+    if not text:
+        return []
+
+    codeish = bool(re.search(r"\b(code|python|javascript|java|c\+\+|tutorial|error|bug|function|api|class|framework)\b", text, re.IGNORECASE))
+    queries = [text]
+
+    if codeish:
+        queries.append(f"{text} tutorial")
+        queries.append(f"{text} official documentation")
+    else:
+        queries.append(f"{text} facts")
+
+    unique = []
+    seen = set()
+    for q in queries:
+        key = q.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(q.strip())
+    return unique[:3]
+
+def build_web_research(user_text, progress_cb=None):
+    queries = build_search_queries(user_text)
+    if not queries:
+        return ""
+
+    by_query = []
+    url_to_queries = {}
+
+    total = len(queries)
+    for idx, query in enumerate(queries, start=1):
+        if progress_cb:
+            progress_cb({
+                "phase": "searching",
+                "step": idx,
+                "total": total,
+                "query": query,
+                "message": f"Searching web ({idx}/{total}): {query}",
+            })
+
+        try:
+            hits = search_duckduckgo(query, max_results=5)
+        except Exception as e:
+            hits = []
+            if progress_cb:
+                progress_cb({
+                    "phase": "error",
+                    "step": idx,
+                    "total": total,
+                    "query": query,
+                    "message": f"Search failed for '{query}': {e}",
+                })
+
+        for hit in hits:
+            url = (hit.get("url") or "").strip()
+            if url:
+                url_to_queries.setdefault(url, set()).add(query)
+
+        by_query.append((query, hits))
+        if progress_cb:
+            progress_cb({
+                "phase": "results",
+                "step": idx,
+                "total": total,
+                "query": query,
+                "message": f"Found {len(hits)} references for '{query}'",
+            })
+
+    corroborated_urls = [
+        url for url, matched_queries in url_to_queries.items() if len(matched_queries) > 1
+    ][:5]
+
+    lines = []
+    lines.append("Live web research (cross-referenced):")
+    for query, hits in by_query:
+        lines.append(f"Query: {query}")
+        if not hits:
+            lines.append("- No reliable references returned.")
+            continue
+        for hit in hits[:3]:
+            title = _clean_text(hit.get("title", "")) or "Untitled"
+            snippet = _clean_text(hit.get("snippet", "")) or "No snippet available."
+            url = (hit.get("url") or "").strip()
+            lines.append(f"- {title}: {snippet}")
+            if url:
+                lines.append(f"  Source: {url}")
+
+    if corroborated_urls:
+        lines.append("Cross-reference matches (same source appeared in multiple searches):")
+        for url in corroborated_urls:
+            lines.append(f"- {url}")
+    else:
+        lines.append("Cross-reference matches: no repeated sources found across queries.")
+
+    research_text = "\n".join(lines).strip()
+    if len(research_text) > 6500:
+        research_text = research_text[:6500] + "\n... [truncated]"
+
+    if progress_cb:
+        progress_cb({
+            "phase": "complete",
+            "step": total,
+            "total": total,
+            "query": "",
+            "message": "Web research complete.",
+        })
+
+    return research_text
 
 # ── Tool functions ────────────────────────────────────────────────────────────
 
@@ -451,6 +678,11 @@ def _build_prompt(history):
 
 async def _ws_handler(websocket):
     """Handle one browser client connection."""
+    await websocket.send(json.dumps({
+        "type": "internet_status",
+        "available": get_internet_status(),
+    }))
+
     async for raw in websocket:
         try:
             msg = json.loads(raw)
@@ -480,6 +712,42 @@ async def _ws_handler(websocket):
 
             history.append({"role": "user", "content": user_text})
             user_requested_tool = user_explicitly_requested_tool(user_text)
+
+            internet_available = get_internet_status(force=True)
+            await websocket.send(json.dumps({
+                "type": "internet_status",
+                "available": internet_available,
+            }))
+
+            should_search = internet_available and not is_super_basic_prompt(user_text)
+            if should_search:
+                def ws_progress(payload):
+                    event = {"type": "search_progress"}
+                    event.update(payload)
+                    try:
+                        asyncio.create_task(websocket.send(json.dumps(event)))
+                    except Exception:
+                        pass
+
+                web_research = build_web_research(user_text, progress_cb=ws_progress)
+                if web_research:
+                    history.append({
+                        "role": "user",
+                        "content": (
+                            "Use the web research below for your answer. Cross-reference these sources, "
+                            "state when evidence conflicts, and prioritize facts supported by multiple sources.\n\n"
+                            f"{web_research}"
+                        ),
+                    })
+            elif not internet_available:
+                await websocket.send(json.dumps({
+                    "type": "search_progress",
+                    "phase": "offline",
+                    "step": 0,
+                    "total": 0,
+                    "query": "",
+                    "message": "Internet not available. Falling back to local model knowledge.",
+                }))
 
             for _ in range(3):
                 prompt = _build_prompt(history)
@@ -598,6 +866,7 @@ def main():
 Rules:
 - Never use markdown such as astrisks around responses. Only respond with pure text and no markdown
 - After a tool call, wait for the result before doing anything else.
+- When web research is provided, rely on it, cross-reference claims, and clearly call out uncertainty when sources conflict.
 - NEVER write or edit a .pdf file.
 - Keep responses short and direct.
 - Address the user directly, they are human, not an external observer.
@@ -613,6 +882,8 @@ Rules:
     _ws_state["llm"] = llm
     _ws_state["history"] = history
     _ws_state["system_prompt"] = system_prompt
+    _ws_state["internet_available"] = get_internet_status(force=True)
+    _ws_state["internet_last_checked"] = time.time()
 
     # Start WebSocket server in background thread
     if has_ws:
@@ -624,6 +895,7 @@ Rules:
 
     print(f"\n{Colors.BOLD}Welcome to PACE 1.0 Lite!{Colors.RESET}")
     print("I can help understand an extremely broad range of information and answer questions locally")
+    print(f"Internet access: {Colors.GREEN if _ws_state['internet_available'] else Colors.YELLOW}{'Available' if _ws_state['internet_available'] else 'Unavailable'}{Colors.RESET}")
     print(f"Current working folder: {Colors.CYAN}{Path(__file__).resolve().parent}{Colors.RESET}")
     print("Type 'exit' or 'quit' to close.\n")
 
@@ -643,6 +915,30 @@ Rules:
                 history.append({"role": "user", "content": user_input})
 
                 user_requested_tool = user_explicitly_requested_tool(user_input)
+                internet_available = get_internet_status(force=True)
+                should_search = internet_available and not is_super_basic_prompt(user_input)
+
+                if should_search:
+                    print(f"{Colors.BLUE}Web search: enabled for this prompt{Colors.RESET}")
+
+                    def terminal_progress(payload):
+                        msg = payload.get("message", "").strip()
+                        if msg:
+                            print(f"{Colors.CYAN}{msg}{Colors.RESET}")
+
+                    web_research = build_web_research(user_input, progress_cb=terminal_progress)
+                    if web_research:
+                        history.append({
+                            "role": "user",
+                            "content": (
+                                "Use the web research below for your answer. Cross-reference these sources, "
+                                "state when evidence conflicts, and prioritize facts supported by multiple sources.\n\n"
+                                f"{web_research}"
+                            ),
+                        })
+                elif not internet_available:
+                    print(f"{Colors.YELLOW}Internet unavailable. Using local model knowledge only.{Colors.RESET}")
+
                 max_steps = 3
 
                 for step in range(max_steps):

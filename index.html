@@ -167,6 +167,24 @@
     font-weight: 500;
   }
 
+  .internet-pill {
+    font-size: 11px;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    border-radius: 999px;
+    padding: 4px 10px;
+    white-space: nowrap;
+  }
+  .internet-pill.available {
+    color: #1d7f63;
+    border-color: rgba(29,127,99,0.35);
+    background: rgba(76,175,138,0.12);
+  }
+  .internet-pill.unavailable {
+    color: var(--text-muted);
+  }
+
   .btn-icon {
     width: 34px;
     height: 34px;
@@ -627,6 +645,34 @@
     background: var(--border);
   }
 
+  .search-progress {
+    margin-bottom: 12px;
+    border: 1px solid var(--tool-border);
+    background: var(--tool-bg);
+    border-radius: 12px;
+    padding: 10px 12px;
+    display: none;
+  }
+  .search-progress.show {
+    display: block;
+  }
+  .search-progress-title {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 6px;
+  }
+  .search-progress-log {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text-secondary);
+    max-height: 124px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+  }
+
   /* ── Scrollbar ── */
   .chat-scroll::-webkit-scrollbar { width: 4px; }
   .chat-scroll::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 4px; }
@@ -653,6 +699,7 @@
     <div class="header-right">
       <div class="status-dot offline" id="statusDot"></div>
       <span class="status-label" id="statusLabel">Ready</span>
+      <span class="internet-pill unavailable" id="internetStatus">Internet Unavailable</span>
 
       <!-- Clear button -->
       <button class="btn-icon" id="clearBtn" title="Clear conversation">
@@ -685,6 +732,10 @@
 
   <!-- Chat scroll area -->
   <div class="chat-scroll" id="chatScroll">
+    <div class="search-progress" id="searchProgress">
+      <div class="search-progress-title">Search Progress</div>
+      <div class="search-progress-log" id="searchProgressLog"></div>
+    </div>
 
     <!-- Welcome screen -->
     <div class="welcome" id="welcomeScreen">
@@ -694,7 +745,7 @@
         </svg>
       </div>
       <h1>Hi! I'm Pace, How Can I Help?</h1>
-      <p>Your local AI model powered by Gemma 3 1B. Everything runs on your machine - no internet required for inference.</p>
+      <p>Your local AI model powered by Gemma 3 1B. Pace can also use internet search when available and cross-reference results.</p>
       <div class="welcome-chips">
         <span class="chip" onclick="useChip(this)">Write 1500 words on Easter</span>
         <span class="chip" onclick="useChip(this)">What can you do?</span>
@@ -736,6 +787,9 @@ const sendBtn = document.getElementById('sendBtn');
 const welcomeScreen = document.getElementById('welcomeScreen');
 const statusDot = document.getElementById('statusDot');
 const statusLabel = document.getElementById('statusLabel');
+const internetStatus = document.getElementById('internetStatus');
+const searchProgress = document.getElementById('searchProgress');
+const searchProgressLog = document.getElementById('searchProgressLog');
 let messages = []; // {role, content}
 let isThinking = false;
 let sessionStarted = false;
@@ -759,14 +813,17 @@ function connectWS() {
     ws.onclose = () => {
       wsConnected = false;
       setStatus('offline');
+      setInternetStatus(false);
       // Retry after 3s
       setTimeout(connectWS, 3000);
     };
     ws.onerror = () => {
       wsConnected = false;
+      setInternetStatus(false);
     };
   } catch(err) {
     setStatus('offline');
+    setInternetStatus(false);
   }
 }
 
@@ -787,6 +844,14 @@ function handleServerMessage(data) {
   if (data.type === 'status') {
     setStatus(data.status);
     if (data.status === 'ready') setIdle();
+    return;
+  }
+  if (data.type === 'internet_status') {
+    setInternetStatus(Boolean(data.available));
+    return;
+  }
+  if (data.type === 'search_progress') {
+    appendSearchProgress(data.message, data.query);
     return;
   }
   removeThinking();
@@ -821,6 +886,31 @@ function setIdle() {
   setStatus(wsConnected ? 'ready' : 'offline');
 }
 
+function setInternetStatus(available) {
+  internetStatus.className = 'internet-pill';
+  if (available) {
+    internetStatus.classList.add('available');
+    internetStatus.textContent = 'Internet Available';
+  } else {
+    internetStatus.classList.add('unavailable');
+    internetStatus.textContent = 'Internet Unavailable';
+  }
+}
+
+function appendSearchProgress(message, query) {
+  const line = [message, query ? `(query: ${query})` : ''].filter(Boolean).join(' ');
+  if (!line) return;
+  searchProgress.classList.add('show');
+  const stamp = new Date().toLocaleTimeString();
+  searchProgressLog.textContent += `[${stamp}] ${line}\n`;
+  searchProgressLog.scrollTop = searchProgressLog.scrollHeight;
+}
+
+function clearSearchProgress() {
+  searchProgressLog.textContent = '';
+  searchProgress.classList.remove('show');
+}
+
 // ─────────────────────────────────────────────
 // Input auto-resize
 // ─────────────────────────────────────────────
@@ -852,6 +942,7 @@ function sendMessage() {
   }
 
   appendUserMessage(text);
+  clearSearchProgress();
   input.value = '';
   input.style.height = 'auto';
   sendBtn.disabled = true;
@@ -1076,6 +1167,7 @@ document.getElementById('clearBtn').addEventListener('click', () => {
   welcomeScreen.style.display = 'flex';
   sessionStarted = false;
   messages = [];
+  clearSearchProgress();
   if (ws && wsConnected) {
     ws.send(JSON.stringify({ type: 'clear' }));
   }
