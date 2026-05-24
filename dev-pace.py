@@ -40,9 +40,14 @@ MAX_BASIC_PROMPT_CHAR_COUNT = 12
 MAX_RESEARCH_TEXT_LENGTH = 6500
 INTERNET_CHECK_CACHE_SECONDS = 20
 CODE_RELATED_KEYWORDS_PATTERN = re.compile(
-    r"\b(code|python|javascript|java|c\+\+|tutorial|error|bug|function|api|class|framework|syntax|compile|debug|library|package|module|import|export|variable|loop|array|database|sql|html|css|react|node|git)\b",
+    r"\b(code|python|javascript|java|c\+\+|cpp|tutorial|error|bug|function|api|class|framework|syntax|compile|debug|library|package|module|import|export|variable|loop|array|database|sql|html|css|react|node|git)\b",
     re.IGNORECASE,
 )
+SUPER_BASIC_PROMPTS = {
+    "hi", "hello", "hey", "yo", "sup", "what's up", "how are you",
+    "thanks", "thank you", "ok", "okay", "cool", "nice", "bye", "goodbye",
+    "howdy", "hiya", "cheers", "good morning", "good afternoon", "good evening", "see you"
+}
 
 # Shared state for WebSocket server
 _ws_state = {
@@ -283,12 +288,7 @@ def is_super_basic_prompt(text):
     if not lowered:
         return True
 
-    super_basic = {
-        "hi", "hello", "hey", "yo", "sup", "what's up", "how are you",
-        "thanks", "thank you", "ok", "okay", "cool", "nice", "bye", "goodbye",
-        "howdy", "hiya", "cheers", "good morning", "good afternoon", "good evening", "see you"
-    }
-    if lowered in super_basic:
+    if lowered in SUPER_BASIC_PROMPTS:
         return True
 
     if len(lowered) <= MAX_BASIC_PROMPT_CHAR_COUNT and re.fullmatch(r"[\w\s!?.,'’-]+", lowered, re.UNICODE):
@@ -301,10 +301,10 @@ def build_search_queries(user_text):
     if not text:
         return []
 
-    codeish = bool(CODE_RELATED_KEYWORDS_PATTERN.search(text))
+    is_code_related = bool(CODE_RELATED_KEYWORDS_PATTERN.search(text))
     queries = [text]
 
-    if codeish:
+    if is_code_related:
         queries.append(f"{text} tutorial")
         queries.append(f"{text} official documentation")
     else:
@@ -396,6 +396,7 @@ def build_web_research(user_text, progress_cb=None):
     if len(research_text) > MAX_RESEARCH_TEXT_LENGTH:
         trimmed = research_text[:MAX_RESEARCH_TEXT_LENGTH]
         split_at = max(trimmed.rfind("\n"), trimmed.rfind(". "))
+        # If no good boundary is found, keep the character-based truncation.
         if split_at > 0:
             trimmed = trimmed[:split_at].rstrip()
         research_text = trimmed + "\n... [truncated]"
