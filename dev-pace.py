@@ -36,8 +36,13 @@ except Exception:
 MODEL_NAME = "gemma-3-1b-it-Q4_K_M.gguf"
 MODEL_URL = "https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf"
 PACE_DIR_NAME = ".pace_agent"
-MAX_BASIC_PROMPT_LENGTH = 12
+MAX_BASIC_PROMPT_CHAR_COUNT = 12
 MAX_RESEARCH_TEXT_LENGTH = 6500
+INTERNET_CHECK_CACHE_SECONDS = 20
+CODE_RELATED_KEYWORDS_PATTERN = re.compile(
+    r"\b(code|python|javascript|java|c\+\+|tutorial|error|bug|function|api|class|framework|syntax|compile|debug|library|package|module|import|export|variable|loop|array|database|sql|html|css|react|node|git)\b",
+    re.IGNORECASE,
+)
 
 # Shared state for WebSocket server
 _ws_state = {
@@ -46,6 +51,8 @@ _ws_state = {
     "system_prompt": "",
     "internet_available": False,
     "internet_last_checked": 0.0,
+    # Re-entrant lock avoids deadlock when handlers refresh internet status
+    # while already holding shared-state lock for history updates.
     "lock": threading.RLock(),
 }
 
@@ -192,7 +199,7 @@ def get_internet_status(force=False):
         last_checked = _ws_state.get("internet_last_checked", 0.0)
         cached = _ws_state.get("internet_available", False)
 
-    if not force and (time.time() - last_checked) < 20:
+    if not force and (time.time() - last_checked) < INTERNET_CHECK_CACHE_SECONDS:
         return cached
 
     current = detect_internet_access()
@@ -284,7 +291,7 @@ def is_super_basic_prompt(text):
     if lowered in super_basic:
         return True
 
-    if len(lowered) <= MAX_BASIC_PROMPT_LENGTH and re.fullmatch(r"[a-z\s!?.,']+", lowered):
+    if len(lowered) <= MAX_BASIC_PROMPT_CHAR_COUNT and re.fullmatch(r"[\w\s!?.,'’-]+", lowered, re.UNICODE):
         return True
 
     return False
@@ -294,7 +301,7 @@ def build_search_queries(user_text):
     if not text:
         return []
 
-    codeish = bool(re.search(r"\b(code|python|javascript|java|c\+\+|tutorial|error|bug|function|api|class|framework|syntax|compile|debug|library|package|module|import|export|variable|loop|array|database|sql|html|css|react|node|git)\b", text, re.IGNORECASE))
+    codeish = bool(CODE_RELATED_KEYWORDS_PATTERN.search(text))
     queries = [text]
 
     if codeish:
@@ -387,7 +394,11 @@ def build_web_research(user_text, progress_cb=None):
 
     research_text = "\n".join(lines).strip()
     if len(research_text) > MAX_RESEARCH_TEXT_LENGTH:
-        research_text = research_text[:MAX_RESEARCH_TEXT_LENGTH] + "\n... [truncated]"
+        trimmed = research_text[:MAX_RESEARCH_TEXT_LENGTH]
+        split_at = max(trimmed.rfind("\n"), trimmed.rfind(". "))
+        if split_at > 0:
+            trimmed = trimmed[:split_at].rstrip()
+        research_text = trimmed + "\n... [truncated]"
 
     if progress_cb:
         progress_cb({
@@ -733,6 +744,7 @@ async def _ws_handler(websocket):
                         task = asyncio.get_running_loop().create_task(websocket.send(json.dumps(event)))
                         search_progress_tasks.append(task)
                     except Exception:
+                        # Ignore progress-send scheduling failures (e.g. websocket closing).
                         pass
 
                 web_research = build_web_research(user_text, progress_cb=ws_progress)
