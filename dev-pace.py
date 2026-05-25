@@ -76,6 +76,14 @@ CURRENT_INFO_HINT_PATTERN = re.compile(
     r"\b(latest|current|recent|today|now|new|updated|update|up-to-date|as of)\b",
     re.IGNORECASE,
 )
+INTERNET_RESEARCH_TRIGGER_PATTERN = re.compile(
+    r"\b(what is|what are|who is|when did|where is|latest|current|recent|today|news|price|release|version|documentation|docs|official|tutorial|guide|api|reference|cdn|install|setup|fix|error|troubleshoot|compare|difference)\b",
+    re.IGNORECASE,
+)
+LOCAL_ONLY_INTENT_PATTERN = re.compile(
+    r"\b(write|draft|compose|story|poem|song|lyrics|essay|narrative|fiction|scene|dialogue|imagine|brainstorm|summarize|paraphrase|rewrite)\b",
+    re.IGNORECASE,
+)
 SUPER_BASIC_PROMPTS = {
     "hi", "hello", "hey", "yo", "sup", "what's up", "how are you",
     "thanks", "thank you", "ok", "okay", "cool", "nice", "bye", "goodbye",
@@ -582,6 +590,28 @@ def is_super_basic_prompt(text):
         return True
 
     return False
+
+def should_use_internet_research(text):
+    prompt = (text or "").strip()
+    if not prompt:
+        return False
+
+    if is_super_basic_prompt(prompt):
+        return False
+
+    has_trigger = bool(INTERNET_RESEARCH_TRIGGER_PATTERN.search(prompt))
+    has_local_only_intent = bool(LOCAL_ONLY_INTENT_PATTERN.search(prompt))
+    is_code_related, asks_for_cdn = analyze_code_query(prompt)
+    has_current_hint = bool(CURRENT_INFO_HINT_PATTERN.search(prompt))
+    asks_question = "?" in prompt
+
+    if has_local_only_intent and not (has_trigger or has_current_hint or asks_for_cdn):
+        return False
+
+    if is_code_related or asks_for_cdn or has_current_hint:
+        return True
+
+    return has_trigger and asks_question
 
 def build_search_queries(user_text):
     text = (user_text or "").strip()
@@ -1175,7 +1205,7 @@ async def _ws_handler(websocket):
             continue
 
         with _ws_state["lock"]:
-            should_search = internet_enabled and internet_available and not is_super_basic_prompt(user_text)
+            should_search = internet_enabled and internet_available and should_use_internet_research(user_text)
             if should_search:
                 search_progress_tasks = []
 
@@ -1438,7 +1468,7 @@ Rules:
                 user_requested_tool = user_explicitly_requested_tool(user_input)
                 internet_enabled = get_internet_mode()
                 internet_available = get_internet_status(force=True)
-                should_search = internet_enabled and internet_available and not is_super_basic_prompt(user_input)
+                should_search = internet_enabled and internet_available and should_use_internet_research(user_input)
 
                 if should_search:
                     print(f"{Colors.BLUE}Web search: enabled for this prompt{Colors.RESET}")

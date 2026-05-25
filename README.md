@@ -17,3 +17,5 @@ PACE can now run in two internet modes:
 You can toggle this in both places:
 - **GUI**: use the `Web On` / `Web Off` button in the header.
 - **Terminal**: use `/internet on`, `/internet off`, `/internet toggle`, or `/internet status`.
+
+When Web mode is on, Pace now only uses internet research when the prompt appears to need external/current references (for example docs, tutorials, API/version/current-event lookups). Simple greetings and creative/narrative writing stay local.
