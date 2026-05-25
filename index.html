@@ -1261,7 +1261,7 @@ function formatText(str) {
       );
       return token;
     });
-    const withStrongTokens = withLinkTokens.replace(/@@((?:(?!@@).)+)@@/g, (match, content) => {
+    const withStrongTokens = withLinkTokens.replace(/@@([^\n@][^@\n]*)@@/g, (match, content) => {
       if (/^(CODE|LINK)_\d+$/i.test(content)) return match;
       const token = `@@STRONG_${strongTokens.length}@@`;
       strongTokens.push(`<strong>${escapeHTML(content)}</strong>`);
@@ -1450,7 +1450,7 @@ function formatText(str) {
       const value = String(line || '').trim();
       if (!value) return false;
       if (/^<!DOCTYPE html\b/i.test(value)) return true;
-      return /^<\/?[a-zA-Z][\w:-]*(\s+[^<>]*)?>$/.test(value);
+      return /^<\/?[a-zA-Z][\w:-]*(\s+[^<>\n\r]*)?>$/.test(value);
     }
 
     for (let i = 0; i < lines.length; i += 1) {
@@ -1491,7 +1491,8 @@ function formatText(str) {
         }
 
         const htmlLines = lines.slice(i, j);
-        // This threshold helps avoid treating short prose snippets as full HTML documents.
+        // 6 total lines + 4 tag-shaped lines reduces false positives from short snippets while
+        // still catching common compact HTML documents that may omit explicit </html> close tags.
         const hasHtmlDocumentShape =
           sawHtmlClose || (htmlLines.length >= MIN_HTML_BLOCK_LINES && htmlTagLineCount >= MIN_HTML_TAG_LINES);
         if (hasHtmlDocumentShape) {
