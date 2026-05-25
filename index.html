@@ -1115,11 +1115,11 @@ function appendUserMessage(text) {
     </div>
     ${copyBtn}
   `;
+  chat.appendChild(outer);
   const copyBtnEl = outer.querySelector('.copy-btn');
   if (copyBtnEl) {
-    copyBtnEl.addEventListener('click', () => copyMessage(String(text ?? ''), copyBtnEl));
+    copyBtnEl.addEventListener('click', () => copyMessage(text, copyBtnEl));
   }
-  chat.appendChild(outer);
   scrollToBottom();
 }
 
@@ -1163,11 +1163,11 @@ function appendPaceMessage(text, toolName, toolResult) {
     </div>
     ${copyBtn}
   `;
+  chat.appendChild(outer);
   const copyBtnEl = outer.querySelector('.copy-btn');
   if (copyBtnEl) {
     copyBtnEl.addEventListener('click', () => copyMessage(rawText, copyBtnEl));
   }
-  chat.appendChild(outer);
   scrollToBottom();
 }
 
