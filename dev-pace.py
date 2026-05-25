@@ -91,26 +91,6 @@ SUPER_BASIC_PROMPTS = {
     "howdy", "hiya", "cheers", "good morning", "good afternoon", "good evening", "see you"
 }
 
-# ── Coding-skill constants ────────────────────────────────────────────────────
-EXECUTABLE_LANGUAGES = {"python", "javascript", "bash"}
-LINTABLE_LANGUAGES = {"python", "javascript"}
-CODE_EXEC_TIMEOUT = 15          # seconds per code execution
-MAX_CODE_RETRY_ATTEMPTS = 3     # self-correction retries on failure
-MAX_EXEC_OUTPUT_CHARS = 2000    # truncate long stdout/stderr
-MAX_LINT_OUTPUT_CHARS = 1500    # truncate long lint output
-MAX_FILE_CONTEXT_CHARS = 2000   # max chars injected per file
-MAX_GREP_RESULTS_SHOWN = 5      # max file snippets returned by grep
-MAX_GREP_SNIPPET_LINES = 6      # context lines around each grep hit
-
-FILE_REF_PATTERN = re.compile(
-    r'\b[\w][\w\-]*\.(?:py|js|ts|html|css|json|md|txt|sh|yaml|yml)\b',
-    re.IGNORECASE,
-)
-SAFE_CODE_EXEC_BLOCKLIST = re.compile(
-    r'(?:shutil\.rmtree|os\.remove|os\.unlink|os\.rmdir)\s*\(',
-    re.IGNORECASE,
-)
-
 # Shared state for WebSocket server
 _ws_state = {
     "llm": None,
@@ -968,17 +948,14 @@ def tool_edit_file(path, search_text, replace_text):
     except Exception as e:
         return f"Error editing file '{path}': {str(e)}"
 
-def tool_run_command(command, headless=False):
-    if headless:
-        print(f"\n{Colors.BLUE}[GUI] Running shell command:{Colors.RESET} {Colors.YELLOW}{command}{Colors.RESET}")
-    else:
-        print(f"\n{Colors.RED}{Colors.BOLD}Agent wants to run a shell command:{Colors.RESET}")
-        print(f"  {Colors.YELLOW}{command}{Colors.RESET}")
+def tool_run_command(command):
+    print(f"\n{Colors.RED}{Colors.BOLD}Agent wants to run a shell command:{Colors.RESET}")
+    print(f"  {Colors.YELLOW}{command}{Colors.RESET}")
 
-        confirm = input("Allow execution? (y/N): ").strip().lower()
+    confirm = input("Allow execution? (y/N): ").strip().lower()
 
-        if confirm != "y":
-            return "Error: Command execution denied by the user."
+    if confirm != "y":
+        return "Error: Command execution denied by the user."
 
     base_dir = Path(__file__).resolve().parent
 
@@ -1009,236 +986,7 @@ def tool_run_command(command, headless=False):
     except Exception as e:
         return f"Error running command: {str(e)}"
 
-
-def tool_execute_code(language, code):
-    """Execute a code block in a subprocess and return exit_code/stdout/stderr."""
-    import tempfile
-
-    lang = _normalize_code_language(language)
-
-    if lang == "python":
-        ext, cmd_fn = ".py", lambda p: [sys.executable, p]
-    elif lang in ("javascript", "typescript"):
-        ext, cmd_fn = ".js", lambda p: ["node", p]
-    elif lang == "bash":
-        ext, cmd_fn = ".sh", lambda p: ["bash", p]
-    else:
-        return {
-            "exit_code": -1, "stdout": "", "timed_out": False, "skipped": True,
-            "stderr": f"Language '{language}' is not executable.",
-        }
-
-    if lang == "python" and SAFE_CODE_EXEC_BLOCKLIST.search(code or ""):
-        return {
-            "exit_code": -1, "stdout": "", "timed_out": False, "skipped": True,
-            "stderr": "Skipped: code contains destructive file-system calls (os.remove / shutil.rmtree).",
-        }
-
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=ext, delete=False, encoding="utf-8"
-        ) as f:
-            f.write(code or "")
-            tmp_path = f.name
-
-        try:
-            result = subprocess.run(
-                cmd_fn(tmp_path),
-                capture_output=True,
-                text=True,
-                timeout=CODE_EXEC_TIMEOUT,
-                cwd=Path(__file__).resolve().parent,
-            )
-            return {
-                "exit_code": result.returncode,
-                "stdout": result.stdout[:MAX_EXEC_OUTPUT_CHARS],
-                "stderr": result.stderr[:MAX_EXEC_OUTPUT_CHARS],
-                "timed_out": False,
-                "skipped": False,
-            }
-        except subprocess.TimeoutExpired:
-            return {
-                "exit_code": -1,
-                "stdout": "",
-                "stderr": f"Execution timed out after {CODE_EXEC_TIMEOUT}s.",
-                "timed_out": True,
-                "skipped": False,
-            }
-        except FileNotFoundError as exc:
-            return {
-                "exit_code": -1,
-                "stdout": "",
-                "stderr": f"Runtime not found: {exc}",
-                "timed_out": False,
-                "skipped": True,
-            }
-    except Exception as exc:
-        return {
-            "exit_code": -1, "stdout": "", "timed_out": False, "skipped": False,
-            "stderr": str(exc),
-        }
-    finally:
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-
-
-def tool_run_lint(language, code):
-    """Run pylint/pyflakes (Python) or eslint (JS) and return the issues string."""
-    import tempfile
-
-    lang = _normalize_code_language(language)
-
-    if lang not in LINTABLE_LANGUAGES:
-        return ""
-
-    tmp_path = None
-    try:
-        ext = ".py" if lang == "python" else ".js"
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=ext, delete=False, encoding="utf-8"
-        ) as f:
-            f.write(code or "")
-            tmp_path = f.name
-
-        if lang == "python":
-            # Try pylint first (errors/warnings only, no style)
-            try:
-                r = subprocess.run(
-                    [sys.executable, "-m", "pylint", "--score=n",
-                     "--disable=C,R,W0611,W0614", tmp_path],
-                    capture_output=True, text=True, timeout=30,
-                )
-                out = (r.stdout + r.stderr).replace(tmp_path, "<code>").strip()
-                if r.returncode != 0 and out and "No module named" not in out:
-                    return out[:MAX_LINT_OUTPUT_CHARS]
-                if "No module named" not in out:
-                    return ""
-            except FileNotFoundError:
-                pass
-
-            # Fall back to pyflakes
-            try:
-                r = subprocess.run(
-                    [sys.executable, "-m", "pyflakes", tmp_path],
-                    capture_output=True, text=True, timeout=15,
-                )
-                out = (r.stdout + r.stderr).replace(tmp_path, "<code>").strip()
-                if r.returncode != 0 and out and "No module named" not in out:
-                    return out[:MAX_LINT_OUTPUT_CHARS]
-                return ""
-            except FileNotFoundError:
-                pass
-
-        elif lang == "javascript":
-            try:
-                r = subprocess.run(
-                    ["eslint", "--no-eslintrc", "--env", "node,es6",
-                     "--rule", "semi: error",
-                     "--rule", "no-undef: warn",
-                     "--rule", "no-unused-vars: warn",
-                     tmp_path],
-                    capture_output=True, text=True, timeout=30,
-                )
-                out = (r.stdout + r.stderr).replace(tmp_path, "<code>").strip()
-                if r.returncode != 0 and out and "No module named" not in out:
-                    return out[:MAX_LINT_OUTPUT_CHARS]
-            except FileNotFoundError:
-                pass
-
-    except Exception as exc:
-        return f"Lint error: {exc}"
-    finally:
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-
-    return ""
-
-
-def tool_grep_files(pattern, file_glob=None):
-    """Search project files for a regex pattern, return annotated snippets."""
-    base_dir = Path(__file__).resolve().parent
-
-    try:
-        regex = re.compile(pattern, re.IGNORECASE)
-    except re.error as exc:
-        return f"Error: Invalid regex pattern: {exc}"
-
-    text_exts = {
-        ".py", ".js", ".ts", ".html", ".css", ".json", ".md",
-        ".txt", ".sh", ".yaml", ".yml", ".toml", ".cfg", ".ini", ".xml",
-    }
-
-    if file_glob:
-        try:
-            candidates = list(base_dir.glob(file_glob))
-        except Exception:
-            candidates = list(base_dir.rglob("*"))
-    else:
-        candidates = list(base_dir.rglob("*"))
-
-    results = []
-    for fp in candidates:
-        if not fp.is_file():
-            continue
-        parts = fp.relative_to(base_dir).parts
-        if any(p.startswith(".") for p in parts) or PACE_DIR_NAME in parts:
-            continue
-        if fp.suffix.lower() not in text_exts:
-            continue
-        try:
-            lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
-        except Exception:
-            continue
-        for i, line in enumerate(lines):
-            if regex.search(line):
-                start = max(0, i - 2)
-                end = min(len(lines), i + 3)   # 2 lines before + match + 2 lines after
-                snippet = "\n".join(lines[start:end])
-                rel = str(fp.relative_to(base_dir))
-                results.append(f"{rel}:{i + 1}:\n{snippet}")
-                if len(results) >= MAX_GREP_RESULTS_SHOWN:
-                    break
-        if len(results) >= MAX_GREP_RESULTS_SHOWN:
-            break
-
-    if not results:
-        return f"No matches found for pattern '{pattern}'."
-    return "\n\n".join(results)
-
-
-def _auto_inject_file_context(user_text):
-    """If the user explicitly mentions project filenames, return their contents."""
-    if not user_text:
-        return ""
-    base_dir = Path(__file__).resolve().parent
-    found = FILE_REF_PATTERN.findall(user_text)
-    parts = []
-    total = 0
-    for fname in dict.fromkeys(found):  # deduplicate, preserve order
-        fp = (base_dir / fname).resolve()
-        if not fp.is_file() or not is_safe_path(base_dir, fp):
-            continue
-        try:
-            content = fp.read_text(encoding="utf-8", errors="replace")
-            if len(content) > MAX_FILE_CONTEXT_CHARS:
-                content = content[:MAX_FILE_CONTEXT_CHARS] + "\n... [truncated]"
-            snippet = f"--- Content of {fname} ---\n{content}\n--- End of File ---"
-            parts.append(snippet)
-            total += len(snippet)
-            if total >= MAX_FILE_CONTEXT_CHARS * 3:
-                break
-        except Exception:
-            pass
-    return "\n\n".join(parts)
-
-
+# ── Parsing ───────────────────────────────────────────────────────────────────
 
 WRAPPER_TAGS_RE = re.compile(r"^\s*<(response|text)\b[^>]*>\s*(.*?)\s*</\1>\s*$", re.IGNORECASE | re.DOTALL)
 EDGE_WRAPPER_TAG_RE = re.compile(r"^\s*</?(response|text)\b[^>]*>\s*|\s*</?(response|text)\b[^>]*>\s*$", re.IGNORECASE)
@@ -1248,70 +996,20 @@ WRITE_FILE_TOOL_RE = re.compile(r'<write_file\s+path=(["\'])([^"\']+)\1\s*>(.*?)
 EDIT_FILE_TOOL_RE = re.compile(r'<edit_file\s+path=(["\'])([^"\']+)\1\s*>(.*?)</edit_file>', re.DOTALL)
 EDIT_FILE_BODY_RE = re.compile(r"<search>(.*?)</search>\s*<replace>(.*?)</replace>", re.DOTALL)
 RUN_COMMAND_TOOL_RE = re.compile(r'<run_command\s+cmd=(["\'])([^"\']+)\1\s*/>', re.DOTALL)
-GREP_FILES_TOOL_RE = re.compile(
-    r'<grep_files\s+pattern=(["\'])([^"\']+)\1(?:\s+glob=(["\'])([^"\']+)\3)?\s*/>',
-    re.DOTALL,
-)
 MAX_WRAPPER_STRIP_PASSES = 8
-MAX_REPORTED_ISSUES_PER_BLOCK = 5
-MAX_REPORTED_CODE_CHECK_DETAILS = 15
-MIN_CODE_LIKE_LINE_LENGTH = 3
-CODE_PUNCTUATION_TOKENS = ("{", "}", ";", "=>")
+MAX_REPORTED_ISSUES_PER_BLOCK = 2
+MAX_REPORTED_CODE_CHECK_DETAILS = 8
 CODE_BLOCK_RE = re.compile(r"```([^\n`]*)\r?\n([\s\S]*?)```")
-UNFENCED_CODE_LINE_RE = re.compile(
-    r"^\s*(?:"
-    r"def\s+\w+\s*\(|class\s+\w+|import\s+\w+|from\s+\w+\s+import\s+|"
-    r"if\s+__name__\s*==\s*['\"]__main__['\"]\s*:|"
-    r"function\s+\w+\s*\(|const\s+\w+\s*=|let\s+\w+\s*=|var\s+\w+\s*=|"
-    r"for\s*\(|while\s*\(|if\s*\(|try\s*:|except\b|return\b|"
-    r'#include\s+[<"]|public\s+class\s+\w+'
-    r")",
-    re.IGNORECASE,
-)
-SQL_STATEMENT_LINE_RE = re.compile(r"^\s*(?:SELECT|INSERT|UPDATE|DELETE)\b", re.IGNORECASE)
-PLACEHOLDER_TOKEN_RE = re.compile(r"@@([A-Za-z]+(?:_)?\d+)@@")
-CODE_PLACEHOLDER_NAME_RE = re.compile(r"code(?:_)?\d+")
-PLACEHOLDER_MAPPING_RE = re.compile(
-    r"(@@[A-Za-z]+(?:_)?\d+@@)\s*(?:=|:|-)\s*(?:`([^`\n]+)`|\"([^\"\n]+)\"|'([^'\n]+)')",
-    re.IGNORECASE,
-)
-PLACEHOLDER_MAPPING_LINE_RE = re.compile(
-    r"^\s*@@[A-Za-z]+(?:_)?\d+@@\s*(?:=|:|-)\s*(?:`[^`\n]+`|\"[^\"\n]+\"|'[^'\n]+')\s*$",
-    re.IGNORECASE | re.MULTILINE,
-)
 CODE_PLACEHOLDER_RE = re.compile(
     r"\b(todo|fixme|insert[_\s-]*here|your[_\s-]*api[_\s-]*key|placeholder)\b",
     re.IGNORECASE,
 )
-NON_ASCII_CODE_RE = re.compile(r"[^\x00-\x7F]")
-# Heuristic threshold:
-# - Keeps obvious fake values like "test1234" from flooding warnings too much.
-# - Still catches most real hardcoded secrets/tokens, which are typically longer.
-MIN_CREDENTIAL_LITERAL_LEN = 8
-_CRED_LITERAL_DQ = rf'"(?:\\.|[^"\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}"'
-_CRED_LITERAL_SQ = rf"'(?:\\.|[^'\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}'"
-_CRED_LITERAL_PATTERN = rf"(?:{_CRED_LITERAL_DQ}|{_CRED_LITERAL_SQ})"
-HARDCODED_CRED_RE = re.compile(
-    rf'''
-    # direct assignment: password = "..."
-    (?:\b(?:password|passwd|secret|api[_\-]?key|token|auth)\b\s*=\s*{_CRED_LITERAL_PATTERN})
-    |
-    # dict/object literal: "api_key": "..."
-    (?:["'](?:password|passwd|secret|api[_\-]?key|token|auth)["']\s*:\s*{_CRED_LITERAL_PATTERN})
-    |
-    # environment fallback default: os.getenv("KEY", "hardcoded_default")
-    (?:\b(?:os\.)?getenv\s*\(\s*["'][A-Za-z0-9_\-]+["']\s*,\s*{_CRED_LITERAL_PATTERN}\s*\))
-    ''',
-    re.IGNORECASE | re.VERBOSE,
-)
-BARE_EXCEPT_RE = re.compile(r"^\s*except\s*:", re.MULTILINE)
 TOOL_INTENT_PATTERNS = [
     re.compile(r"\b(list|show)\b.*\b(files?|folders?|directories?)\b"),
     re.compile(r"\b(read|open|show)\b.*\bfile\b"),
     re.compile(r"\b(write|create|save|overwrite)\b.*\bfile\b"),
     re.compile(r"\b(edit|modify|change|replace|update)\b.*\bfile\b"),
     re.compile(r"\b(run|execute)\b.*\b(command|cmd|terminal|shell|script|tests?)\b"),
-    re.compile(r"\b(grep|search|find)\b.*\b(file|project|codebase|pattern)\b"),
 ]
 
 def normalize_model_output(text):
@@ -1332,29 +1030,7 @@ def normalize_model_output(text):
         wrappers_removed = True
         cleaned = updated
 
-    placeholder_mappings = {}
-    for match in PLACEHOLDER_MAPPING_RE.finditer(cleaned):
-        token = match.group(1)
-        resolved_value = match.group(2) or match.group(3) or match.group(4) or ""
-        if token and resolved_value:
-            placeholder_mappings[token] = resolved_value.strip()
-
-    for token, resolved_value in placeholder_mappings.items():
-        cleaned = cleaned.replace(token, resolved_value)
-
-    if placeholder_mappings:
-        cleaned = PLACEHOLDER_MAPPING_LINE_RE.sub("", cleaned)
-
-    def _placeholder_fallback(match):
-        placeholder_name = (match.group(1) or "").lower()
-        return "code" if CODE_PLACEHOLDER_NAME_RE.fullmatch(placeholder_name) else ""
-
-    cleaned = PLACEHOLDER_TOKEN_RE.sub(_placeholder_fallback, cleaned)
-    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
-    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
-    cleaned = re.sub(r",\s*,+", ", ", cleaned)
-    cleaned = re.sub(r"\(\s*\)", "", cleaned)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    cleaned = re.sub(r'@@[A-Za-z]+\d+@@', 'code', cleaned, flags=re.IGNORECASE)
 
 
     return cleaned, wrappers_removed
@@ -1393,17 +1069,9 @@ def parse_tool_call(xml_text):
     if cmd_match:
         return {"tool": "run_command", "cmd": cmd_match.group(2)}
 
-    grep_match = GREP_FILES_TOOL_RE.fullmatch(text)
-    if grep_match:
-        return {
-            "tool": "grep_files",
-            "pattern": grep_match.group(2),
-            "glob": grep_match.group(4) or "",
-        }
-
     return None
 
-def execute_tool_call(xml_text, headless=False):
+def execute_tool_call(xml_text):
     parsed = parse_tool_call(xml_text)
     if not parsed:
         return None
@@ -1434,13 +1102,7 @@ def execute_tool_call(xml_text, headless=False):
 
     if parsed["tool"] == "run_command":
         command = parsed["cmd"]
-        return tool_run_command(command, headless=headless)
-
-    if parsed["tool"] == "grep_files":
-        pattern = parsed["pattern"]
-        file_glob = parsed.get("glob") or None
-        print(f"\n{Colors.BLUE}Running tool: {Colors.BOLD}grep_files{Colors.RESET} ({pattern})")
-        return tool_grep_files(pattern, file_glob)
+        return tool_run_command(command)
 
     return None
 
@@ -1466,37 +1128,6 @@ def _extract_fenced_code_blocks(text):
         code = (match.group(2) or "").rstrip()
         blocks.append({"language": language, "code": code})
     return blocks
-
-def _contains_unfenced_code_like_content(text):
-    raw = (text or "").strip()
-    if not raw or CODE_BLOCK_RE.search(raw):
-        return False
-
-    if parse_tool_call(raw):
-        return False
-
-    lines = [line for line in raw.splitlines() if line.strip()]
-    if len(lines) < 2:
-        return False
-
-    def _has_code_punctuation(line):
-        for token in CODE_PUNCTUATION_TOKENS:
-            if token in line:
-                return True
-        return False
-
-    code_like_lines = 0
-    for line in lines:
-        stripped_line = line.strip()
-        if stripped_line.startswith(("#", "//", "--")):
-            continue
-        if UNFENCED_CODE_LINE_RE.search(line) or SQL_STATEMENT_LINE_RE.search(line):
-            code_like_lines += 1
-            continue
-        if _has_code_punctuation(line) and len(stripped_line) > MIN_CODE_LIKE_LINE_LENGTH:
-            code_like_lines += 1
-
-    return code_like_lines >= 2
 
 def _has_balanced_delimiters(code):
     stack = []
@@ -1533,24 +1164,6 @@ def _has_balanced_delimiters(code):
 
     return not stack and in_string is None
 
-def _format_short_list(items, max_items=3):
-    if not items:
-        return ""
-    shown = items[:max_items]
-    suffix = ", ..." if len(items) > max_items else ""
-    return ", ".join(shown) + suffix
-
-def _is_meaningful_statement(node):
-    if isinstance(node, ast.Pass):
-        return False
-    if (
-        isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Constant)
-        and isinstance(node.value.value, str)
-    ):
-        return False
-    return True
-
 def _run_code_checks_for_block(language, code):
     checks_run = 0
     checks_passed = 0
@@ -1565,47 +1178,25 @@ def _run_code_checks_for_block(language, code):
             issues.append(issue_text)
 
     stripped = (code or "").strip()
-    has_non_ascii = bool(NON_ASCII_CODE_RE.search(code or ""))
-
-    # Check 1: Non-empty
     record_check(bool(stripped), "Code block is empty.")
-
-    # Check 2: Balanced delimiters
     record_check(
         _has_balanced_delimiters(code),
         "Potentially unbalanced delimiters detected ((), [], or {}).",
     )
-
-    # Check 3: No placeholder text
     record_check(
         not CODE_PLACEHOLDER_RE.search(code or ""),
-        "Found placeholder text (e.g. TODO/FIXME/placeholder) - write complete, runnable code.",
-    )
-
-    # Check 4: No non-ASCII characters (catches Cyrillic/CJK identifiers and comments)
-    record_check(
-        not has_non_ascii,
-        "Non-ASCII characters found in code - all identifiers, comments, and text must be in English.",
-    )
-
-    # Check 5: No hardcoded credentials
-    record_check(
-        not HARDCODED_CRED_RE.search(code or ""),
-        "Possible hardcoded credential detected (password/secret/api_key/token literal assignment).",
+        "Found placeholder text (for example TODO/FIXME/placeholder).",
     )
 
     if language == "python":
-        # Check 6: Syntax validity
-        tree = None
         try:
-            tree = ast.parse(code or "")
+            ast.parse(code or "")
             record_check(True)
         except SyntaxError as err:
             line = getattr(err, "lineno", "?")
             msg = getattr(err, "msg", "invalid syntax")
             record_check(False, f"Python syntax error at line {line}: {msg}.")
 
-        # Check 7: No unsafe patterns
         risky_patterns = []
         if re.search(r"\beval\s*\(", code or ""):
             risky_patterns.append("eval()")
@@ -1619,32 +1210,6 @@ def _run_code_checks_for_block(language, code):
             not risky_patterns,
             f"Potentially unsafe Python usage: {', '.join(risky_patterns)}.",
         )
-
-        # Check 8: No bare except clauses
-        record_check(
-            not BARE_EXCEPT_RE.search(code or ""),
-            "Bare 'except:' clause found - catch a specific exception type instead.",
-        )
-
-        # Check 9: No empty function or class bodies (all-pass or docstring-only bodies)
-        if tree is not None:
-            empty_definitions = []
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    real_stmts = [
-                        s for s in node.body
-                        if _is_meaningful_statement(s)
-                    ]
-                    if not real_stmts:
-                        empty_definitions.append(getattr(node, "name", "?"))
-            record_check(
-                not empty_definitions,
-                (
-                    f"The following definitions have empty bodies: "
-                    f"{_format_short_list(empty_definitions)} - each must have a real implementation."
-                ),
-            )
-
     elif language == "json":
         try:
             json.loads(code or "")
@@ -1667,31 +1232,18 @@ def _run_code_checks_for_block(language, code):
 def build_code_check_report(text):
     blocks = _extract_fenced_code_blocks(text)
     if not blocks:
-        if _contains_unfenced_code_like_content(text):
-            issue = (
-                "Code-like output was not in fenced code blocks, so execution/lint checks could not run. "
-                "Rewrite code using fenced blocks with a language tag (for example ```python)."
-            )
-            return {
-                "summary": "Code checks incomplete: code detected without fenced blocks.",
-                "details": [issue],
-                "issues": 1,
-                "all_issues": [issue],
-            }
         return None
 
     total_checks = 0
     total_passed = 0
     details = []
     issue_count = 0
-    all_issues = []
 
     for index, block in enumerate(blocks, start=1):
         result = _run_code_checks_for_block(block["language"], block["code"])
         total_checks += result["checks_run"]
         total_passed += result["checks_passed"]
         issue_count += len(result["issues"])
-        all_issues.extend(result["issues"])
 
         status = "ok" if not result["issues"] else f"{len(result['issues'])} issue(s)"
         details.append(
@@ -1713,9 +1265,7 @@ def build_code_check_report(text):
     return {
         "summary": summary,
         "details": details[:MAX_REPORTED_CODE_CHECK_DETAILS],
-        # issues is the numeric count, while all_issues is the full issue text list.
         "issues": issue_count,
-        "all_issues": all_issues,
     }
 
 def format_code_check_report(report):
@@ -1724,26 +1274,6 @@ def format_code_check_report(report):
     lines = ["Code Check Report:", report.get("summary", "").strip()]
     lines.extend(report.get("details", []))
     return "\n".join(line for line in lines if line).strip()
-
-def _build_validation_feedback(exec_results, lint_results, static_issues=None):
-    """Format execution, lint, and static-check failures into a re-prompt error message."""
-    parts = []
-    for lang, result in exec_results:
-        if result.get("skipped"):
-            continue
-        if result["exit_code"] != 0:
-            stderr = (result.get("stderr") or "").strip()
-            stdout = (result.get("stdout") or "").strip()
-            section = f"Execution error ({lang}, exit {result['exit_code']}):\n{stderr}"
-            if stdout:
-                section += f"\nStdout:\n{stdout}"
-            parts.append(section)
-    for lang, lint_output in lint_results:
-        parts.append(f"Lint issues ({lang}):\n{lint_output.strip()}")
-    if static_issues:
-        issues_text = "\n".join(f"- {i}" for i in static_issues)
-        parts.append(f"Static code issues found:\n{issues_text}")
-    return "\n\n".join(parts)
 
 def _enforce_system_prompt_and_trim_history(history, system_prompt):
     if not isinstance(history, list):
@@ -1900,197 +1430,93 @@ async def _ws_handler(websocket):
                     "message": "Internet not available. Falling back to local model knowledge.",
                 }))
 
-            # Auto-inject context from explicitly mentioned project files
-            file_context = _auto_inject_file_context(user_text)
-            if file_context:
-                history.append({
-                    "role": "user",
-                    "content": f"Relevant project file context:\n{file_context}",
-                })
+            for _ in range(3):
+                prompt = _build_prompt(history, system_prompt)
 
-            final_response_text = None
-            for code_attempt in range(MAX_CODE_RETRY_ATTEMPTS + 1):
-                # ── Inner tool-chain loop ───────────────────────────────────
-                for _ in range(3):
-                    prompt = _build_prompt(history, system_prompt)
+                response = llm(
+                    prompt,
+                    max_tokens=4096,
+                    temperature=0.1,
+                    stop=["<end_of_turn>", "<start_of_turn>"],
+                    echo=False,
+                )
+                response_text, wrappers_removed = normalize_model_output(
+                    response["choices"][0]["text"]
+                )
 
-                    response = llm(
-                        prompt,
-                        max_tokens=4096,
+                if not response_text:
+                    await websocket.send(json.dumps({"type": "message", "content": "(no response)"}))
+                    break
+
+                tool_result = None
+                if user_requested_tool and not wrappers_removed:
+                    tool_result = execute_tool_call(response_text)
+
+                if tool_result is not None:
+                    parsed = parse_tool_call(response_text)
+                    tool_name = parsed["tool"] if parsed else "tool"
+
+                    await websocket.send(json.dumps({
+                        "type": "tool",
+                        "tool": tool_name,
+                        "result": str(tool_result),
+                        "text": "",
+                    }))
+
+                    history.append({"role": "model", "content": response_text})
+                    history.append({
+                        "role": "user",
+                        "content": f"Tool result:\n{tool_result}\n\nNow answer the user's question using this result. Do not call any more tools."
+                    })
+
+                    prompt2 = _build_prompt(history, system_prompt)
+                    response2 = llm(
+                        prompt2,
+                        max_tokens=512,
                         temperature=0.1,
                         stop=["<end_of_turn>", "<start_of_turn>"],
                         echo=False,
                     )
-                    response_text, wrappers_removed = normalize_model_output(
-                        response["choices"][0]["text"]
-                    )
-
-                    if not response_text:
-                        await websocket.send(json.dumps({"type": "message", "content": "(no response)"}))
-                        final_response_text = None
-                        break
-
-                    tool_result = None
-                    if user_requested_tool and not wrappers_removed:
-                        tool_result = execute_tool_call(response_text, headless=True)
-
-                    if tool_result is not None:
-                        parsed = parse_tool_call(response_text)
-                        tool_name = parsed["tool"] if parsed else "tool"
-
-                        await websocket.send(json.dumps({
-                            "type": "tool",
-                            "tool": tool_name,
-                            "result": str(tool_result),
-                            "text": "",
-                        }))
-
-                        history.append({"role": "model", "content": response_text})
-                        history.append({
-                            "role": "user",
-                            "content": f"Tool result:\n{tool_result}\n\nNow answer the user's question using this result. Do not call any more tools."
-                        })
-
-                        prompt2 = _build_prompt(history, system_prompt)
-                        response2 = llm(
-                            prompt2,
-                            max_tokens=512,
-                            temperature=0.1,
-                            stop=["<end_of_turn>", "<start_of_turn>"],
-                            echo=False,
-                        )
-                        summary, _ = normalize_model_output(response2["choices"][0]["text"])
-                        final_response_text = summary or None
-                        break
-
-                    else:
-                        final_response_text = response_text
-                        break
-
-                if final_response_text is None:
+                    summary, _ = normalize_model_output(response2["choices"][0]["text"])
+                    if summary:
+                        checked_summary = summary
+                        code_check_report = build_code_check_report(summary)
+                        if code_check_report:
+                            await websocket.send(json.dumps({
+                                "type": "code_check_status",
+                                "status": "running",
+                                "message": "Running code checks on generated code...",
+                            }))
+                            await websocket.send(json.dumps({
+                                "type": "code_check_status",
+                                "status": "done",
+                                "message": code_check_report["summary"],
+                                "details": code_check_report["details"],
+                                "issues": code_check_report["issues"],
+                            }))
+                        await websocket.send(json.dumps({"type": "message", "content": checked_summary}))
+                        history.append({"role": "model", "content": checked_summary})
                     break
 
-                # ── Execute code blocks and run lint ────────────────────────
-                blocks = _extract_fenced_code_blocks(final_response_text)
-                exec_results = []
-                lint_results = []
-
-                for block in blocks:
-                    lang = block["language"]
-                    code = block["code"]
-
-                    if lang in EXECUTABLE_LANGUAGES:
+                else:
+                    checked_response = response_text
+                    code_check_report = build_code_check_report(response_text)
+                    if code_check_report:
                         await websocket.send(json.dumps({
                             "type": "code_check_status",
                             "status": "running",
-                            "message": f"Executing {lang} code…",
+                            "message": "Running code checks on generated code...",
                         }))
-                        exec_r = tool_execute_code(lang, code)
-                        exec_results.append((lang, exec_r))
-                        if exec_r.get("skipped"):
-                            await websocket.send(json.dumps({
-                                "type": "code_check_status",
-                                "status": "done",
-                                "message": f"{lang}: execution skipped - {exec_r['stderr']}",
-                                "details": [],
-                                "issues": 0,
-                            }))
-                        else:
-                            status_msg = (
-                                f"{lang}: exit {exec_r['exit_code']} - "
-                                + ("ok" if exec_r["exit_code"] == 0 else "failed")
-                            )
-                            details = []
-                            if exec_r.get("stdout"):
-                                details.append(f"stdout: {exec_r['stdout'][:500]}")
-                            if exec_r.get("stderr"):
-                                details.append(f"stderr: {exec_r['stderr'][:500]}")
-                            await websocket.send(json.dumps({
-                                "type": "code_check_status",
-                                "status": "done",
-                                "message": status_msg,
-                                "details": details,
-                                "issues": 0 if exec_r["exit_code"] == 0 else 1,
-                            }))
-
-                    if lang in LINTABLE_LANGUAGES:
                         await websocket.send(json.dumps({
                             "type": "code_check_status",
-                            "status": "running",
-                            "message": f"Running lint on {lang} code…",
+                            "status": "done",
+                            "message": code_check_report["summary"],
+                            "details": code_check_report["details"],
+                            "issues": code_check_report["issues"],
                         }))
-                        lint_output = tool_run_lint(lang, code)
-                        if lint_output:
-                            lint_results.append((lang, lint_output))
-                            lint_lines = lint_output.strip().splitlines()[:8]
-                            await websocket.send(json.dumps({
-                                "type": "code_check_status",
-                                "status": "done",
-                                "message": f"{lang} lint: issues found",
-                                "details": lint_lines,
-                                "issues": len(lint_lines),
-                            }))
-                        else:
-                            await websocket.send(json.dumps({
-                                "type": "code_check_status",
-                                "status": "done",
-                                "message": f"{lang} lint: no issues",
-                                "details": [],
-                                "issues": 0,
-                            }))
-
-                # ── Run static checks ──────────────────────────────────────
-                await websocket.send(json.dumps({
-                    "type": "code_check_status",
-                    "status": "running",
-                    "message": "Running static code checks…",
-                }))
-                code_check_report = build_code_check_report(final_response_text)
-                static_issues = code_check_report.get("all_issues", []) if code_check_report else []
-
-                # ── Check for failures and decide whether to retry ──────────
-                has_exec_fail = any(
-                    not r.get("skipped") and r["exit_code"] != 0
-                    for _, r in exec_results
-                )
-                has_lint_fail = bool(lint_results)
-                has_static_fail = bool(static_issues)
-                has_failures = has_exec_fail or has_lint_fail or has_static_fail
-
-                if has_failures and code_attempt < MAX_CODE_RETRY_ATTEMPTS:
-                    error_feedback = _build_validation_feedback(exec_results, lint_results, static_issues)
-                    await websocket.send(json.dumps({
-                        "type": "code_check_status",
-                        "status": "running",
-                        "message": (
-                            f"Issues detected - self-correcting code "
-                            f"(attempt {code_attempt + 1}/{MAX_CODE_RETRY_ATTEMPTS})…"
-                        ),
-                    }))
-                    history.append({"role": "model", "content": final_response_text})
-                    history.append({
-                        "role": "user",
-                        "content": (
-                            "The code you wrote has issues. "
-                            "Fix every problem listed below and rewrite the fully corrected code:\n\n"
-                            f"{error_feedback}"
-                        ),
-                    })
-                    continue  # outer retry loop
-
-                # ── No failures (or retries exhausted): emit static checks ──
-                if code_check_report:
-                    await websocket.send(json.dumps({
-                        "type": "code_check_status",
-                        "status": "done",
-                        "message": code_check_report["summary"],
-                        "details": code_check_report["details"],
-                        "issues": code_check_report["issues"],
-                    }))
-
-                await websocket.send(json.dumps({"type": "message", "content": final_response_text}))
-                history.append({"role": "model", "content": final_response_text})
-                break  # done
+                    await websocket.send(json.dumps({"type": "message", "content": checked_response}))
+                    history.append({"role": "model", "content": checked_response})
+                    break
 
         await websocket.send(json.dumps({"type": "status", "status": "ready"}))
 
@@ -2153,10 +1579,8 @@ Current UTC date: {current_utc_date}
 
 
 Rules:
-- Always respond in English. Never reply in another language even if the user writes in one.
 - Keep responses plain and direct by default.
 - When you provide code, always use fenced code blocks with a language tag (for example ```python).
-- Write all code in English - every identifier (variable, function, class, parameter), comment, string literal, and printed output must be in English, without exception.
 - Prefer safe, production-ready coding practices and avoid patterns that can break at runtime.
 - After a tool call, wait for the result before doing anything else.
 - When web research is provided, rely on it, cross-reference claims, prioritize up-to-date evidence, and clearly call out uncertainty when sources conflict.
@@ -2166,16 +1590,6 @@ Rules:
 - Address the user directly, they are human, not an external observer.
 - No bullet points or markdown
 - Mirror the tone and style of the person you're talking to. If they're casual, be casual. If they're brief, be brief. Match their energy.
-- Any Python or JavaScript code you write is automatically executed. If it produces errors, you will receive the output and must fix it.
-- Write complete, runnable code - no stubs, no placeholders, no TODO comments.
-
-Tools (output ONLY the tool call as your entire response when using a tool):
-- <list_files /> - list all project files
-- <read_file path="filename" /> - read a file
-- <write_file path="filename">content</write_file> - write/create a file
-- <edit_file path="filename"><search>old text</search><replace>new text</replace></edit_file> - edit a file
-- <run_command cmd="command" /> - run a terminal command
-- <grep_files pattern="regex" glob="*.py" /> - search project files for a pattern and get matching snippets (glob is optional)
 """
 
     history = [
@@ -2198,7 +1612,7 @@ Tools (output ONLY the tool call as your entire response when using a tool):
         ws_thread.start()
         print(f"{Colors.GREEN}GUI server started on ws://localhost:7070{Colors.RESET}")
     else:
-        print(f"{Colors.YELLOW}websockets not installed - GUI will not connect. Run: pip install websockets{Colors.RESET}")
+        print(f"{Colors.YELLOW}websockets not installed — GUI will not connect. Run: pip install websockets{Colors.RESET}")
 
     if startup_issue:
         print(f"{Colors.YELLOW}{startup_issue}{Colors.RESET}")
@@ -2291,148 +1705,75 @@ Tools (output ONLY the tool call as your entire response when using a tool):
                 elif not internet_available:
                     print(f"{Colors.YELLOW}Internet unavailable. Using local model knowledge only.{Colors.RESET}")
 
-                # Auto-inject context from explicitly mentioned project files
-                file_context = _auto_inject_file_context(user_input)
-                if file_context:
-                    print(f"{Colors.BLUE}Injecting file context…{Colors.RESET}")
-                    history.append({
-                        "role": "user",
-                        "content": f"Relevant project file context:\n{file_context}",
-                    })
+                max_steps = 3
 
-                final_response_text = None
-                for code_attempt in range(MAX_CODE_RETRY_ATTEMPTS + 1):
-                    # ── Inner tool-chain loop ───────────────────────────────
-                    for step in range(3):
+                for step in range(max_steps):
+                    print(f"\r{Colors.CYAN}Thinking...{Colors.RESET}", end="", flush=True)
+
+                    prompt = _build_prompt(history, system_prompt)
+
+                    response = llm(
+                        prompt,
+                        max_tokens=4096,
+                        temperature=0.1,
+                        stop=["<end_of_turn>", "<start_of_turn>"],
+                        echo=False
+                    )
+
+                    sys.stdout.write("\r" + " " * 30 + "\r")
+                    sys.stdout.flush()
+
+                    response_text, wrappers_removed = normalize_model_output(response["choices"][0]["text"])
+
+                    if not response_text:
+                        print(f"{Colors.GREEN}Pace:{Colors.RESET} (no response)")
+                        break
+
+                    tool_result = None
+                    if user_requested_tool and not wrappers_removed:
+                        tool_result = execute_tool_call(response_text)
+
+                    if tool_result is not None:
+                        print(f"{Colors.GREEN}↳{Colors.RESET} {tool_result}")
+
+                        history.append({"role": "model", "content": response_text})
+                        history.append({"role": "user", "content": f"Tool result:\n{tool_result}\n\nNow answer the user's question using this result. Do not call any more tools."})
+
                         print(f"\r{Colors.CYAN}Thinking...{Colors.RESET}", end="", flush=True)
+                        prompt2 = _build_prompt(history, system_prompt)
 
-                        prompt = _build_prompt(history, system_prompt)
-
-                        response = llm(
-                            prompt,
-                            max_tokens=4096,
+                        response2 = llm(
+                            prompt2,
+                            max_tokens=512,
                             temperature=0.1,
                             stop=["<end_of_turn>", "<start_of_turn>"],
                             echo=False
                         )
-
                         sys.stdout.write("\r" + " " * 30 + "\r")
                         sys.stdout.flush()
 
-                        response_text, wrappers_removed = normalize_model_output(response["choices"][0]["text"])
-
-                        if not response_text:
-                            print(f"{Colors.GREEN}Pace:{Colors.RESET} (no response)")
-                            final_response_text = None
-                            break
-
-                        tool_result = None
-                        if user_requested_tool and not wrappers_removed:
-                            tool_result = execute_tool_call(response_text)
-
-                        if tool_result is not None:
-                            print(f"{Colors.GREEN}↳{Colors.RESET} {tool_result}")
-
-                            history.append({"role": "model", "content": response_text})
-                            history.append({"role": "user", "content": f"Tool result:\n{tool_result}\n\nNow answer the user's question using this result. Do not call any more tools."})
-
-                            print(f"\r{Colors.CYAN}Thinking...{Colors.RESET}", end="", flush=True)
-                            prompt2 = _build_prompt(history, system_prompt)
-
-                            response2 = llm(
-                                prompt2,
-                                max_tokens=512,
-                                temperature=0.1,
-                                stop=["<end_of_turn>", "<start_of_turn>"],
-                                echo=False
-                            )
-                            sys.stdout.write("\r" + " " * 30 + "\r")
-                            sys.stdout.flush()
-
-                            summary, _ = normalize_model_output(response2["choices"][0]["text"])
-                            final_response_text = summary or None
-                            break
-
-                        else:
-                            final_response_text = response_text
-                            break
-
-                    if final_response_text is None:
+                        summary, _ = normalize_model_output(response2["choices"][0]["text"])
+                        if summary:
+                            checked_summary = summary
+                            code_check_report = build_code_check_report(summary)
+                            if code_check_report:
+                                print(f"{Colors.CYAN}Running code checks on generated code...{Colors.RESET}")
+                                print(f"{Colors.CYAN}{code_check_report['summary']}{Colors.RESET}")
+                                checked_summary = f"{summary}\n\n{format_code_check_report(code_check_report)}".strip()
+                            print(f"{Colors.GREEN}Pace:{Colors.RESET} {checked_summary}")
+                            history.append({"role": "model", "content": checked_summary})
                         break
 
-                    # ── Execute code blocks and run lint ────────────────────
-                    blocks = _extract_fenced_code_blocks(final_response_text)
-                    exec_results = []
-                    lint_results = []
-
-                    for block in blocks:
-                        lang = block["language"]
-                        code = block["code"]
-
-                        if lang in EXECUTABLE_LANGUAGES:
-                            print(f"{Colors.CYAN}Executing {lang} code…{Colors.RESET}")
-                            exec_r = tool_execute_code(lang, code)
-                            exec_results.append((lang, exec_r))
-                            if exec_r.get("skipped"):
-                                print(f"{Colors.YELLOW}  skipped: {exec_r['stderr']}{Colors.RESET}")
-                            else:
-                                icon = Colors.GREEN if exec_r["exit_code"] == 0 else Colors.RED
-                                print(f"{icon}  exit {exec_r['exit_code']}{Colors.RESET}")
-                                if exec_r.get("stdout"):
-                                    print(f"{Colors.WHITE}  stdout: {exec_r['stdout'][:400]}{Colors.RESET}")
-                                if exec_r.get("stderr"):
-                                    print(f"{Colors.RED}  stderr: {exec_r['stderr'][:400]}{Colors.RESET}")
-
-                        if lang in LINTABLE_LANGUAGES:
-                            print(f"{Colors.CYAN}Running lint on {lang} code…{Colors.RESET}")
-                            lint_output = tool_run_lint(lang, code)
-                            if lint_output:
-                                lint_results.append((lang, lint_output))
-                                print(f"{Colors.YELLOW}{lint_output[:600]}{Colors.RESET}")
-                            else:
-                                print(f"{Colors.GREEN}  lint: no issues{Colors.RESET}")
-
-                    # ── Run static checks ──────────────────────────────────
-                    print(f"{Colors.CYAN}Running static code checks…{Colors.RESET}")
-                    code_check_report = build_code_check_report(final_response_text)
-                    static_issues = code_check_report.get("all_issues", []) if code_check_report else []
-
-                    # ── Check for failures and decide whether to retry ──────
-                    has_exec_fail = any(
-                        not r.get("skipped") and r["exit_code"] != 0
-                        for _, r in exec_results
-                    )
-                    has_lint_fail = bool(lint_results)
-                    has_static_fail = bool(static_issues)
-                    has_failures = has_exec_fail or has_lint_fail or has_static_fail
-
-                    if has_failures and code_attempt < MAX_CODE_RETRY_ATTEMPTS:
-                        error_feedback = _build_validation_feedback(exec_results, lint_results, static_issues)
-                        print(
-                            f"{Colors.YELLOW}Issues detected - self-correcting code "
-                            f"(attempt {code_attempt + 1}/{MAX_CODE_RETRY_ATTEMPTS})…{Colors.RESET}"
-                        )
-                        history.append({"role": "model", "content": final_response_text})
-                        history.append({
-                            "role": "user",
-                            "content": (
-                                "The code you wrote has issues. "
-                                "Fix every problem listed below and rewrite the fully corrected code:\n\n"
-                                f"{error_feedback}"
-                            ),
-                        })
-                        continue  # retry
-
-                    # ── Static checks + final output ────────────────────────
-                    if code_check_report:
-                        print(f"{Colors.CYAN}{code_check_report['summary']}{Colors.RESET}")
-                        final_response_text = (
-                            f"{final_response_text}\n\n{format_code_check_report(code_check_report)}"
-                        ).strip()
-
-                    print(f"{Colors.GREEN}Pace:{Colors.RESET} {final_response_text}")
-                    history.append({"role": "model", "content": final_response_text})
-                    break  # done
+                    else:
+                        checked_response = response_text
+                        code_check_report = build_code_check_report(response_text)
+                        if code_check_report:
+                            print(f"{Colors.CYAN}Running code checks on generated code...{Colors.RESET}")
+                            print(f"{Colors.CYAN}{code_check_report['summary']}{Colors.RESET}")
+                            checked_response = f"{response_text}\n\n{format_code_check_report(code_check_report)}".strip()
+                        print(f"{Colors.GREEN}Pace:{Colors.RESET} {checked_response}")
+                        history.append({"role": "model", "content": checked_response})
+                        break
 
         except KeyboardInterrupt:
             print(f"\n{Colors.YELLOW}Operation cancelled. Type exit to quit.{Colors.RESET}")
