@@ -11,6 +11,7 @@ import asyncio
 import time
 import datetime
 import html
+import contextlib
 from pathlib import Path
 
 try:
@@ -1094,7 +1095,7 @@ async def _ws_handler(websocket):
             llm = _ws_state["llm"]
             history = _ws_state["history"]
             system_prompt = _ws_state["system_prompt"]
-            startup_issue = _ws_state.get("startup_issue", "").strip()
+            startup_issue = _ws_state.get("startup_issue", "")
 
             history.append({"role": "user", "content": user_text})
             user_requested_tool = user_explicitly_requested_tool(user_text)
@@ -1118,12 +1119,6 @@ async def _ws_handler(websocket):
             continue
 
         with _ws_state["lock"]:
-            llm = _ws_state["llm"]
-            history = _ws_state["history"]
-            system_prompt = _ws_state["system_prompt"]
-            user_requested_tool = user_explicitly_requested_tool(user_text)
-            internet_available = _ws_state["internet_available"]
-
             should_search = internet_available and not is_super_basic_prompt(user_text)
             if should_search:
                 search_progress_tasks = []
@@ -1245,14 +1240,15 @@ def main():
 
         try:
             from llama_cpp import Llama
-            import sys, os; sys.stderr = open(os.devnull, 'w')
-            llm = Llama(
-                model_path=str(model_path),
-                n_ctx=100000,
-                n_threads=max(1, min(4, os.cpu_count() or 4)),
-                n_gpu_layers=0,
-                verbose=False
-            )
+            with open(os.devnull, "w") as devnull:
+                with contextlib.redirect_stderr(devnull):
+                    llm = Llama(
+                        model_path=str(model_path),
+                        n_ctx=100000,
+                        n_threads=max(1, min(4, os.cpu_count() or 4)),
+                        n_gpu_layers=0,
+                        verbose=False
+                    )
 
             print(f"{Colors.GREEN}Model loaded successfully!{Colors.RESET}")
 
