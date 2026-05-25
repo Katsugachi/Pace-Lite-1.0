@@ -1270,7 +1270,6 @@ _CRED_LITERAL_SQ = rf"'(?:\\.|[^'\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}'"
 _CRED_LITERAL_PATTERN = rf"(?:{_CRED_LITERAL_DQ}|{_CRED_LITERAL_SQ})"
 HARDCODED_CRED_RE = re.compile(
     rf'''
-    (?ix)
     # direct assignment: password = "..."
     (?:\b(?:password|passwd|secret|api[_\-]?key|token|auth)\b\s*=\s*{_CRED_LITERAL_PATTERN})
     |
@@ -1280,6 +1279,7 @@ HARDCODED_CRED_RE = re.compile(
     # environment fallback default: os.getenv("KEY", "hardcoded_default")
     (?:\b(?:os\.)?getenv\s*\(\s*["'][A-Za-z0-9_\-]+["']\s*,\s*{_CRED_LITERAL_PATTERN}\s*\))
     ''',
+    re.IGNORECASE | re.VERBOSE,
 )
 BARE_EXCEPT_RE = re.compile(r"^\s*except\s*:", re.MULTILINE)
 TOOL_INTENT_PATTERNS = [
