@@ -1137,11 +1137,14 @@ def tool_run_lint(language, code):
             try:
                 r = subprocess.run(
                     ["eslint", "--no-eslintrc", "--env", "node,es6",
-                     "--rule", "semi: error", tmp_path],
+                     "--rule", "semi: error",
+                     "--rule", "no-undef: warn",
+                     "--rule", "no-unused-vars: warn",
+                     tmp_path],
                     capture_output=True, text=True, timeout=30,
                 )
                 out = (r.stdout + r.stderr).replace(tmp_path, "<code>").strip()
-                if r.returncode != 0 and out:
+                if r.returncode != 0 and out and "No module named" not in out:
                     return out[:MAX_LINT_OUTPUT_CHARS]
             except FileNotFoundError:
                 pass
@@ -1196,7 +1199,7 @@ def tool_grep_files(pattern, file_glob=None):
         for i, line in enumerate(lines):
             if regex.search(line):
                 start = max(0, i - 2)
-                end = min(len(lines), i + MAX_GREP_SNIPPET_LINES)
+                end = min(len(lines), i + 3)   # 2 lines before + match + 2 lines after
                 snippet = "\n".join(lines[start:end])
                 rel = str(fp.relative_to(base_dir))
                 results.append(f"{rel}:{i + 1}:\n{snippet}")
