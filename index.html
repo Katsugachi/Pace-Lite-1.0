@@ -1207,6 +1207,7 @@ function escapeHTML(str) {
 
 function formatText(str) {
   const text = String(str ?? '');
+  const INTERNAL_INLINE_TOKEN_RE = /^(CODE|LINK)_\d+$/i;
   function normalizeIncomingText(raw) {
     const MIN_ESCAPED_NEWLINES = 3;
     const ESCAPED_TO_REAL_NEWLINE_RATIO = 2;
@@ -1262,7 +1263,7 @@ function formatText(str) {
       return token;
     });
     const withStrongTokens = withLinkTokens.replace(/@@([^\n@][^@\n]*)@@/g, (match, content) => {
-      if (/^(CODE|LINK)_\d+$/i.test(content)) return match;
+      if (INTERNAL_INLINE_TOKEN_RE.test(content)) return match;
       const token = `@@STRONG_${strongTokens.length}@@`;
       strongTokens.push(`<strong>${escapeHTML(content)}</strong>`);
       return token;
@@ -1425,7 +1426,6 @@ function formatText(str) {
     const lines = input.split('\n');
     const result = [];
     let textBuffer = [];
-    let lastTextTrimmed = null;
 
     function pushText() {
       if (!textBuffer.length) return;
@@ -1433,9 +1433,7 @@ function formatText(str) {
       textBuffer = [];
       const trimmed = value.trim();
       if (!trimmed) return;
-      if (trimmed === lastTextTrimmed) return;
       result.push({ type: 'text', value });
-      lastTextTrimmed = trimmed;
     }
 
     function pushCode(lang, value) {
@@ -1443,7 +1441,6 @@ function formatText(str) {
       if (!codeValue.trim()) return;
       pushText();
       result.push({ type: 'code', lang: lang || 'code', value: codeValue });
-      lastTextTrimmed = null;
     }
 
     function isLikelyHtmlTagLine(line) {
@@ -1491,7 +1488,7 @@ function formatText(str) {
         }
 
         const htmlLines = lines.slice(i, j);
-        // 6 total lines + 4 tag-shaped lines reduces false positives from short snippets while
+        // MIN_HTML_BLOCK_LINES + MIN_HTML_TAG_LINES reduces false positives from short snippets while
         // still catching common compact HTML documents that may omit explicit </html> close tags.
         const hasHtmlDocumentShape =
           sawHtmlClose || (htmlLines.length >= MIN_HTML_BLOCK_LINES && htmlTagLineCount >= MIN_HTML_TAG_LINES);
