@@ -856,7 +856,6 @@ function connectWS() {
       setInternetStatus(false);
     };
   } catch(err) {
-    wsConnected = false;
     updateInternetModeToggleAvailability();
     setStatus('offline');
     setInternetStatus(false);

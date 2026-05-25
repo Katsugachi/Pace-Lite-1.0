@@ -641,7 +641,7 @@ def build_search_queries(user_text):
     else:
         if has_current_hint or not is_super_basic_prompt(text):
             queries.append(f"{focus} latest updates {current_year}")
-        queries.append(f"{focus} facts and references")
+        queries.append(f"{focus} facts")
 
     unique = []
     seen = set()
