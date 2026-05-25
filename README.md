@@ -1,4 +1,5 @@
 # Pace-Lite-1.0
+Highly capable open source local AI model <br>
 Lite version of pace designed to have a GUI<br>
 Added internet search, allowing for more relevant answers.
 ## Main Pace Repo
