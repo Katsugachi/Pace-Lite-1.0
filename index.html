@@ -1204,6 +1204,8 @@ function escapeHTML(str) {
 function formatText(str) {
   const text = String(str ?? '');
   const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const MAX_BLOCKQUOTE_DEPTH = 5;
+  const MAX_FENCE_INDENT = 3;
   let html = '';
 
   function safeHref(href) {
@@ -1262,7 +1264,7 @@ function formatText(str) {
 
     function flushQuote() {
       if (!quoteBuffer.length) return;
-      if (depth >= 5) {
+      if (depth >= MAX_BLOCKQUOTE_DEPTH) {
         out.push(`<blockquote>${applyInlineMarkdown(quoteBuffer.join(' '))}</blockquote>`);
       } else {
         out.push(`<blockquote>${renderTextMarkdown(quoteBuffer.join('\n'), depth + 1)}</blockquote>`);
@@ -1379,7 +1381,7 @@ function formatText(str) {
 
     for (const line of lines) {
       if (!fenceChar) {
-        const openMatch = line.match(/^\s{0,3}(`{3,}|~{3,})(.*)$/);
+        const openMatch = line.match(new RegExp(`^\\s{0,${MAX_FENCE_INDENT}}(\`{3,}|~{3,})(.*)$`));
         if (openMatch) {
           pushText();
           fenceChar = openMatch[1][0];
@@ -1391,7 +1393,7 @@ function formatText(str) {
         continue;
       }
 
-      const closePattern = new RegExp(`^\\s{0,3}${fenceChar}{${fenceLen},}\\s*$`);
+      const closePattern = new RegExp(`^\\s{0,${MAX_FENCE_INDENT}}${fenceChar}{${fenceLen},}\\s*$`);
       if (closePattern.test(line)) {
         pushCode();
         fenceChar = '';
