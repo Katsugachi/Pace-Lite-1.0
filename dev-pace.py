@@ -1623,8 +1623,6 @@ def build_code_check_report(text):
         "details": details[:MAX_REPORTED_CODE_CHECK_DETAILS],
         "issues": issue_count,
         "all_issues": all_issues,
-        # Compatibility alias for older callers; prefer "all_issues".
-        "issue_list": all_issues,
     }
 
 def format_code_check_report(report):
