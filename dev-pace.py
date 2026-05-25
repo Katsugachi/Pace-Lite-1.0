@@ -1256,6 +1256,16 @@ MAX_WRAPPER_STRIP_PASSES = 8
 MAX_REPORTED_ISSUES_PER_BLOCK = 5
 MAX_REPORTED_CODE_CHECK_DETAILS = 15
 CODE_BLOCK_RE = re.compile(r"```([^\n`]*)\r?\n([\s\S]*?)```")
+UNFENCED_CODE_LINE_RE = re.compile(
+    r"^\s*(?:"
+    r"def\s+\w+\s*\(|class\s+\w+|import\s+\w+|from\s+\w+\s+import\s+|"
+    r"if\s+__name__\s*==\s*['\"]__main__['\"]\s*:|"
+    r"function\s+\w+\s*\(|const\s+\w+\s*=|let\s+\w+\s*=|var\s+\w+\s*=|"
+    r"for\s*\(|while\s*\(|if\s*\(|try\s*:|except\b|return\b|"
+    r"#include\s+[<\"]|public\s+class\s+\w+|SELECT\b|INSERT\b|UPDATE\b|DELETE\b"
+    r")",
+    re.IGNORECASE,
+)
 PLACEHOLDER_TOKEN_RE = re.compile(r"@@([A-Za-z]+(?:_)?\d+)@@")
 CODE_PLACEHOLDER_NAME_RE = re.compile(r"code(?:_)?\d+")
 PLACEHOLDER_MAPPING_RE = re.compile(
@@ -1454,6 +1464,28 @@ def _extract_fenced_code_blocks(text):
         blocks.append({"language": language, "code": code})
     return blocks
 
+def _contains_unfenced_code_like_content(text):
+    raw = (text or "").strip()
+    if not raw or CODE_BLOCK_RE.search(raw):
+        return False
+
+    if parse_tool_call(raw):
+        return False
+
+    lines = [line for line in raw.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+
+    code_like_lines = 0
+    for line in lines:
+        if UNFENCED_CODE_LINE_RE.search(line):
+            code_like_lines += 1
+            continue
+        if ("{" in line or "}" in line or ";" in line or "=>" in line) and len(line.strip()) > 3:
+            code_like_lines += 1
+
+    return code_like_lines >= 2
+
 def _has_balanced_delimiters(code):
     stack = []
     pairs = {")": "(",
@@ -1623,6 +1655,17 @@ def _run_code_checks_for_block(language, code):
 def build_code_check_report(text):
     blocks = _extract_fenced_code_blocks(text)
     if not blocks:
+        if _contains_unfenced_code_like_content(text):
+            issue = (
+                "Code-like output was not in fenced code blocks, so execution/lint checks could not run. "
+                "Rewrite code using fenced blocks with a language tag (for example ```python)."
+            )
+            return {
+                "summary": "Code checks incomplete: no fenced code blocks found.",
+                "details": [issue],
+                "issues": 1,
+                "all_issues": [issue],
+            }
         return None
 
     total_checks = 0
