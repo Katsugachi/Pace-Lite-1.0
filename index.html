@@ -1207,6 +1207,7 @@ function escapeHTML(str) {
 
 function formatText(str) {
   const text = String(str ?? '');
+  const INTERNAL_INLINE_TOKEN_RE = /^(CODE|LINK|STRONG)_\d+$/i;
   function normalizeIncomingText(raw) {
     const MIN_ESCAPED_NEWLINES = 3;
     const ESCAPED_TO_REAL_NEWLINE_RATIO = 2;
@@ -1246,6 +1247,7 @@ function formatText(str) {
     const source = String(raw ?? '');
     const codeTokens = [];
     const linkTokens = [];
+    const strongTokens = [];
     const withCodeTokens = source.replace(/`([^`]+)`/g, (_, code) => {
       const token = `@@CODE_${codeTokens.length}@@`;
       codeTokens.push(`<code class="inline-code">${escapeHTML(code)}</code>`);
@@ -1260,8 +1262,14 @@ function formatText(str) {
       );
       return token;
     });
+    const withStrongTokens = withLinkTokens.replace(/@@([^\n@][^@\n]*)@@/g, (match, content) => {
+      if (INTERNAL_INLINE_TOKEN_RE.test(content)) return match;
+      const token = `@@STRONG_${strongTokens.length}@@`;
+      strongTokens.push(`<strong>${escapeHTML(content)}</strong>`);
+      return token;
+    });
 
-    let escaped = escapeHTML(withLinkTokens);
+    let escaped = escapeHTML(withStrongTokens);
     escaped = escaped
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
       .replace(/__([^_]+)__/g, '<strong>$1</strong>')
@@ -1271,7 +1279,8 @@ function formatText(str) {
 
     return escaped
       .replace(/@@CODE_(\d+)@@/g, (_, idx) => codeTokens[Number(idx)] || '')
-      .replace(/@@LINK_(\d+)@@/g, (_, idx) => linkTokens[Number(idx)] || '');
+      .replace(/@@LINK_(\d+)@@/g, (_, idx) => linkTokens[Number(idx)] || '')
+      .replace(/@@STRONG_(\d+)@@/g, (_, idx) => strongTokens[Number(idx)] || '');
   }
 
   function renderTextMarkdown(raw, depth = 0) {
@@ -1394,6 +1403,109 @@ function formatText(str) {
       </div>`;
   }
 
+  function inferLanguageFromPath(filePathRaw) {
+    const filePath = String(filePathRaw || '').trim().toLowerCase();
+    if (filePath.endsWith('.html') || filePath.endsWith('.htm')) return 'html';
+    if (filePath.endsWith('.css')) return 'css';
+    if (filePath.endsWith('.js') || filePath.endsWith('.mjs') || filePath.endsWith('.cjs')) return 'javascript';
+    if (filePath.endsWith('.ts') || filePath.endsWith('.tsx')) return 'typescript';
+    if (filePath.endsWith('.json')) return 'json';
+    if (filePath.endsWith('.md')) return 'markdown';
+    if (filePath.endsWith('.py')) return 'python';
+    if (filePath.endsWith('.sh')) return 'bash';
+    return 'code';
+  }
+
+  function splitTextSegments(raw) {
+    const MIN_HTML_BLOCK_LINES = 6;
+    const MIN_HTML_TAG_LINES = 4;
+
+    const input = String(raw ?? '');
+    if (!input.trim()) return [];
+
+    const lines = input.split('\n');
+    const result = [];
+    let textBuffer = [];
+
+    function pushText() {
+      if (!textBuffer.length) return;
+      const value = textBuffer.join('\n');
+      textBuffer = [];
+      const trimmed = value.trim();
+      if (!trimmed) return;
+      result.push({ type: 'text', value });
+    }
+
+    function pushCode(lang, value) {
+      const codeValue = String(value ?? '');
+      if (!codeValue.trim()) return;
+      pushText();
+      result.push({ type: 'code', lang: lang || 'code', value: codeValue });
+    }
+
+    function isLikelyHtmlTagLine(line) {
+      const value = String(line || '').trim();
+      if (!value) return false;
+      if (/^<!DOCTYPE html\b/i.test(value)) return true;
+      return /^<\/?[a-zA-Z][\w:-]*(\s+[^<>\n\r]*)?>$/.test(value);
+    }
+
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      const contentMarker = line.match(/^\s*---\s*Content of\s+(.+?)\s*---\s*$/i);
+      if (contentMarker) {
+        const filePath = contentMarker[1];
+        let endIndex = -1;
+        for (let j = i + 1; j < lines.length; j += 1) {
+          if (/^\s*---\s*End of File\s*---\s*$/i.test(lines[j])) {
+            endIndex = j;
+            break;
+          }
+        }
+
+        if (endIndex > i) {
+          const codeLines = lines.slice(i + 1, endIndex);
+          pushCode(inferLanguageFromPath(filePath), codeLines.join('\n'));
+          i = endIndex;
+          continue;
+        }
+      }
+
+      const htmlStart = /^\s*<!DOCTYPE html\b/i.test(line) || /^\s*<html\b/i.test(line);
+      if (htmlStart) {
+        let j = i;
+        let htmlTagLineCount = 0;
+        let sawHtmlClose = false;
+        while (j < lines.length) {
+          const currentLine = lines[j];
+          if (isLikelyHtmlTagLine(currentLine)) htmlTagLineCount += 1;
+          if (/^\s*<\/html>\s*$/i.test(currentLine)) {
+            sawHtmlClose = true;
+            j += 1;
+            break;
+          }
+          j += 1;
+        }
+
+        const htmlLines = lines.slice(i, j);
+        // Requiring both MIN_HTML_BLOCK_LINES and MIN_HTML_TAG_LINES reduces false positives from short snippets while
+        // still catching common compact HTML documents that may omit explicit </html> close tags.
+        const hasHtmlDocumentShape =
+          sawHtmlClose || (htmlLines.length >= MIN_HTML_BLOCK_LINES && htmlTagLineCount >= MIN_HTML_TAG_LINES);
+        if (hasHtmlDocumentShape) {
+          pushCode('html', htmlLines.join('\n'));
+          i = j - 1;
+          continue;
+        }
+      }
+
+      textBuffer.push(line);
+    }
+
+    pushText();
+    return result;
+  }
+
   function parseSegments(input) {
     const segments = [];
     const lines = String(input ?? '').split('\n');
@@ -1468,7 +1580,13 @@ function formatText(str) {
     if (segment.type === 'code') {
       html += renderCodeBlock(segment.lang, segment.value);
     } else {
-      html += renderTextMarkdown(segment.value);
+      for (const textSegment of splitTextSegments(segment.value)) {
+        if (textSegment.type === 'code') {
+          html += renderCodeBlock(textSegment.lang, textSegment.value);
+        } else {
+          html += renderTextMarkdown(textSegment.value);
+        }
+      }
     }
   }
 
