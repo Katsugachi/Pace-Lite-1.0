@@ -1362,11 +1362,13 @@ function formatText(str) {
   function parseSegments(input) {
     const segments = [];
     const lines = String(input ?? '').split('\n');
+    const openFencePattern = new RegExp(`^\\s{0,${MAX_FENCE_INDENT}}(\`{3,}|~{3,})(.*)$`);
     let textBuffer = [];
     let codeBuffer = [];
     let fenceChar = '';
     let fenceLen = 0;
     let codeLang = '';
+    let closeFencePattern = null;
 
     function pushText() {
       if (!textBuffer.length) return;
@@ -1381,24 +1383,25 @@ function formatText(str) {
 
     for (const line of lines) {
       if (!fenceChar) {
-        const openMatch = line.match(new RegExp(`^\\s{0,${MAX_FENCE_INDENT}}(\`{3,}|~{3,})(.*)$`));
+        const openMatch = line.match(openFencePattern);
         if (openMatch) {
           pushText();
           fenceChar = openMatch[1][0];
           fenceLen = openMatch[1].length;
           codeLang = (openMatch[2] || '').trim();
+          closeFencePattern = new RegExp(`^\\s{0,${MAX_FENCE_INDENT}}${fenceChar}{${fenceLen},}\\s*$`);
           continue;
         }
         textBuffer.push(line);
         continue;
       }
 
-      const closePattern = new RegExp(`^\\s{0,${MAX_FENCE_INDENT}}${fenceChar}{${fenceLen},}\\s*$`);
-      if (closePattern.test(line)) {
+      if (closeFencePattern && closeFencePattern.test(line)) {
         pushCode();
         fenceChar = '';
         fenceLen = 0;
         codeLang = '';
+        closeFencePattern = null;
         continue;
       }
 
