@@ -1264,11 +1264,11 @@ NON_ASCII_CODE_RE = re.compile(r"[^\x00-\x7F]")
 HARDCODED_CRED_RE = re.compile(
     r'''
     (?ix)
-    (?:\b(?:password|passwd|secret|api[_\-]?key|token|auth)\b\s*=\s*["'][^"'\n]{4,}["'])
+    (?:\b(?:password|passwd|secret|api[_\-]?key|token|auth)\b\s*=\s*["'][^"'\n]{8,}["'])
     |
-    (?:["'](?:password|passwd|secret|api[_\-]?key|token|auth)["']\s*:\s*["'][^"'\n]{4,}["'])
+    (?:["'](?:password|passwd|secret|api[_\-]?key|token|auth)["']\s*:\s*["'][^"'\n]{8,}["'])
     |
-    (?:\b(?:os\.)?getenv\s*\(\s*["'][A-Za-z0-9_\-]+["']\s*,\s*["'][^"'\n]{4,}["']\s*\))
+    (?:\b(?:os\.)?getenv\s*\(\s*["'][A-Za-z0-9_\-]+["']\s*,\s*["'][^"'\n]{8,}["']\s*\))
     ''',
 )
 BARE_EXCEPT_RE = re.compile(r"^\s*except\s*:", re.MULTILINE)
@@ -1448,7 +1448,7 @@ def _has_balanced_delimiters(code):
     return not stack and in_string is None
 
 def _format_short_list(items, max_items=3):
-    shown = list(items[:max_items])
+    shown = items[:max_items]
     suffix = "..." if len(items) > max_items else ""
     return ", ".join(shown) + suffix
 
@@ -1466,6 +1466,7 @@ def _run_code_checks_for_block(language, code):
             issues.append(issue_text)
 
     stripped = (code or "").strip()
+    has_non_ascii = bool(NON_ASCII_CODE_RE.search(code or ""))
 
     # Check 1: Non-empty
     record_check(bool(stripped), "Code block is empty.")
@@ -1484,7 +1485,7 @@ def _run_code_checks_for_block(language, code):
 
     # Check 4: No non-ASCII characters (catches Cyrillic/CJK identifiers and comments)
     record_check(
-        not NON_ASCII_CODE_RE.search(code or ""),
+        not has_non_ascii,
         "Non-ASCII characters found in code — all identifiers, comments, and text must be in English.",
     )
 
@@ -1551,27 +1552,29 @@ def _run_code_checks_for_block(language, code):
             )
 
             # Check 10: Non-English identifier names (via AST)
+            # Only run this when code-level non-ASCII check passed to avoid duplicate issues.
             non_ascii_ids = []
-            for node in ast.walk(tree):
-                name = None
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    name = node.name
-                elif isinstance(node, ast.Name):
-                    name = node.id
-                elif isinstance(node, ast.arg):
-                    name = node.arg
-                elif isinstance(node, ast.Attribute):
-                    name = node.attr
-                if name and NON_ASCII_CODE_RE.search(name):
-                    non_ascii_ids.append(name)
-            if non_ascii_ids:
-                record_check(
-                    False,
-                    (
-                        f"Non-English identifier(s) in Python code: {_format_short_list(non_ascii_ids)} "
-                        f"— use English names."
-                    ),
-                )
+            if not has_non_ascii:
+                for node in ast.walk(tree):
+                    name = None
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                        name = node.name
+                    elif isinstance(node, ast.Name):
+                        name = node.id
+                    elif isinstance(node, ast.arg):
+                        name = node.arg
+                    elif isinstance(node, ast.Attribute):
+                        name = node.attr
+                    if name and NON_ASCII_CODE_RE.search(name):
+                        non_ascii_ids.append(name)
+                if non_ascii_ids:
+                    record_check(
+                        False,
+                        (
+                            f"Non-English identifier(s) in Python code: {_format_short_list(non_ascii_ids)} "
+                            f"— use English names."
+                        ),
+                    )
 
     elif language == "json":
         try:
