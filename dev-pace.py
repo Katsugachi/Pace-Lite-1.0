@@ -1266,10 +1266,13 @@ MIN_CREDENTIAL_LITERAL_LEN = 8
 HARDCODED_CRED_RE = re.compile(
     rf'''
     (?ix)
+    # direct assignment: password = "..."
     (?:\b(?:password|passwd|secret|api[_\-]?key|token|auth)\b\s*=\s*(?:"(?:\\.|[^"\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}"|'(?:\\.|[^'\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}'))
     |
+    # dict/object literal: "api_key": "..."
     (?:["'](?:password|passwd|secret|api[_\-]?key|token|auth)["']\s*:\s*(?:"(?:\\.|[^"\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}"|'(?:\\.|[^'\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}'))
     |
+    # environment fallback default: os.getenv("KEY", "hardcoded_default")
     (?:\b(?:os\.)?getenv\s*\(\s*["'][A-Za-z0-9_\-]+["']\s*,\s*(?:"(?:\\.|[^"\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}"|'(?:\\.|[^'\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}')\s*\))
     ''',
 )
@@ -1454,6 +1457,17 @@ def _format_short_list(items, max_items=3):
     suffix = "..." if len(items) > max_items else ""
     return ", ".join(shown) + suffix
 
+def _is_meaningful_statement(node):
+    if isinstance(node, ast.Pass):
+        return False
+    if (
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    ):
+        return False
+    return True
+
 def _run_code_checks_for_block(language, code):
     checks_run = 0
     checks_passed = 0
@@ -1536,12 +1550,7 @@ def _run_code_checks_for_block(language, code):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                     real_stmts = [
                         s for s in node.body
-                        if not isinstance(s, ast.Pass)
-                        and not (
-                            isinstance(s, ast.Expr)
-                            and isinstance(s.value, ast.Constant)
-                            and isinstance(s.value.value, str)
-                        )
+                        if _is_meaningful_statement(s)
                     ]
                     if not real_stmts:
                         empty_definitions.append(getattr(node, "name", "?"))
@@ -1612,6 +1621,7 @@ def build_code_check_report(text):
         "details": details[:MAX_REPORTED_CODE_CHECK_DETAILS],
         "issues": issue_count,
         "all_issues": all_issues,
+        # Compatibility alias for older callers; prefer "all_issues".
         "issue_list": all_issues,
     }
 
