@@ -161,6 +161,7 @@
   .status-dot.ready { background: #4caf8a; }
   .status-dot.loading { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
   .status-dot.checking { background: #d18a2d; animation: pulse 1.1s ease-in-out infinite; }
+  .status-dot.fixing { background: #e05c3a; animation: pulse 0.8s ease-in-out infinite; }
   .status-dot.offline { background: var(--text-muted); }
 
   .status-label {
@@ -965,6 +966,9 @@ function setStatus(state) {
   } else if (state === 'checking') {
     statusDot.classList.add('checking');
     statusLabel.textContent = 'Checking code…';
+  } else if (state === 'fixing') {
+    statusDot.classList.add('fixing');
+    statusLabel.textContent = 'Self-correcting…';
   } else if (state === 'offline') {
     statusDot.classList.add('offline');
     statusLabel.textContent = 'Offline';
@@ -1018,7 +1022,8 @@ function handleCodeCheckStatus(data) {
 
   if (status === 'running') {
     isCodeChecking = true;
-    setStatus('checking');
+    const isFix = /self-correct|fixing|retry/i.test(message);
+    setStatus(isFix ? 'fixing' : 'checking');
     appendSearchProgress(message || 'Running code checks...', '');
     return;
   }
