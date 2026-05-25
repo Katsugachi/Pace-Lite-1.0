@@ -5,6 +5,7 @@ import subprocess
 import urllib.request
 import urllib.parse
 import re
+import ast
 import threading
 import json
 import asyncio
@@ -996,6 +997,11 @@ EDIT_FILE_TOOL_RE = re.compile(r'<edit_file\s+path=(["\'])([^"\']+)\1\s*>(.*?)</
 EDIT_FILE_BODY_RE = re.compile(r"<search>(.*?)</search>\s*<replace>(.*?)</replace>", re.DOTALL)
 RUN_COMMAND_TOOL_RE = re.compile(r'<run_command\s+cmd=(["\'])([^"\']+)\1\s*/>', re.DOTALL)
 MAX_WRAPPER_STRIP_PASSES = 8
+CODE_BLOCK_RE = re.compile(r"```([^\n`]*)\r?\n([\s\S]*?)```")
+CODE_PLACEHOLDER_RE = re.compile(
+    r"\b(todo|fixme|insert[_\s-]*here|your[_\s-]*api[_\s-]*key|placeholder)\b",
+    re.IGNORECASE,
+)
 TOOL_INTENT_PATTERNS = [
     re.compile(r"\b(list|show)\b.*\b(files?|folders?|directories?)\b"),
     re.compile(r"\b(read|open|show)\b.*\bfile\b"),
@@ -1096,6 +1102,171 @@ def execute_tool_call(xml_text):
     return None
 
 # ── WebSocket server ──────────────────────────────────────────────────────────
+
+def _normalize_code_language(language):
+    raw = (language or "").strip().lower()
+    aliases = {
+        "py": "python",
+        "python3": "python",
+        "js": "javascript",
+        "ts": "typescript",
+        "sh": "bash",
+        "shell": "bash",
+        "yml": "yaml",
+    }
+    return aliases.get(raw, raw or "code")
+
+def _extract_fenced_code_blocks(text):
+    blocks = []
+    for match in CODE_BLOCK_RE.finditer(text or ""):
+        language = _normalize_code_language(match.group(1))
+        code = (match.group(2) or "").rstrip()
+        blocks.append({"language": language, "code": code})
+    return blocks
+
+def _has_balanced_delimiters(code):
+    stack = []
+    pairs = {")": "(",
+        "]": "[",
+        "}": "{",
+    }
+    openers = set(pairs.values())
+    in_string = None
+    escaped = False
+
+    for char in code or "":
+        if in_string:
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char == in_string:
+                in_string = None
+            continue
+
+        if char in {"'", '"'}:
+            in_string = char
+            continue
+        if char in openers:
+            stack.append(char)
+            continue
+        if char in pairs:
+            if not stack or stack[-1] != pairs[char]:
+                return False
+            stack.pop()
+
+    return not stack and in_string is None
+
+def _run_code_checks_for_block(language, code):
+    checks_run = 0
+    checks_passed = 0
+    issues = []
+
+    def record_check(ok, issue_text=None):
+        nonlocal checks_run, checks_passed
+        checks_run += 1
+        if ok:
+            checks_passed += 1
+        elif issue_text:
+            issues.append(issue_text)
+
+    stripped = (code or "").strip()
+    record_check(bool(stripped), "Code block is empty.")
+    record_check(
+        _has_balanced_delimiters(code),
+        "Potentially unbalanced delimiters detected ((), [], or {}).",
+    )
+    record_check(
+        not CODE_PLACEHOLDER_RE.search(code or ""),
+        "Found placeholder text (for example TODO/FIXME/placeholder).",
+    )
+
+    if language == "python":
+        try:
+            ast.parse(code or "")
+            record_check(True)
+        except SyntaxError as err:
+            line = getattr(err, "lineno", "?")
+            msg = getattr(err, "msg", "invalid syntax")
+            record_check(False, f"Python syntax error at line {line}: {msg}.")
+
+        risky_patterns = []
+        if re.search(r"\beval\s*\(", code or ""):
+            risky_patterns.append("eval()")
+        if re.search(r"\bexec\s*\(", code or ""):
+            risky_patterns.append("exec()")
+        if re.search(r"subprocess\.(run|Popen)\s*\([^)]*shell\s*=\s*True", code or "", re.DOTALL):
+            risky_patterns.append("subprocess shell=True")
+        record_check(
+            not risky_patterns,
+            f"Potentially unsafe Python usage: {', '.join(risky_patterns)}.",
+        )
+    elif language == "json":
+        try:
+            json.loads(code or "")
+            record_check(True)
+        except Exception as err:
+            record_check(False, f"JSON parse error: {err}.")
+    elif language == "xml":
+        try:
+            ET.fromstring(code or "")
+            record_check(True)
+        except Exception as err:
+            record_check(False, f"XML parse error: {err}.")
+
+    return {
+        "checks_run": checks_run,
+        "checks_passed": checks_passed,
+        "issues": issues,
+    }
+
+def build_code_check_report(text):
+    blocks = _extract_fenced_code_blocks(text)
+    if not blocks:
+        return None
+
+    total_checks = 0
+    total_passed = 0
+    details = []
+    issue_count = 0
+
+    for index, block in enumerate(blocks, start=1):
+        result = _run_code_checks_for_block(block["language"], block["code"])
+        total_checks += result["checks_run"]
+        total_passed += result["checks_passed"]
+        issue_count += len(result["issues"])
+
+        status = "ok" if not result["issues"] else f"{len(result['issues'])} issue(s)"
+        details.append(
+            f"Block {index} ({block['language']}): {status}; "
+            f"{result['checks_passed']}/{result['checks_run']} checks passed."
+        )
+        for issue in result["issues"][:2]:
+            details.append(f"- {issue}")
+
+    summary = (
+        f"Code checks complete on {len(blocks)} block(s): "
+        f"{total_passed}/{total_checks} checks passed."
+    )
+    if issue_count:
+        summary += f" {issue_count} potential issue(s) found."
+    else:
+        summary += " No issues found."
+
+    return {
+        "summary": summary,
+        "details": details[:8],
+        "issues": issue_count,
+    }
+
+def format_code_check_report(report):
+    if not report:
+        return ""
+    lines = ["Code Check Report:", report.get("summary", "").strip()]
+    lines.extend(report.get("details", []))
+    return "\n".join(line for line in lines if line).strip()
 
 def _enforce_system_prompt_and_trim_history(history, system_prompt):
     if not isinstance(history, list):
@@ -1301,13 +1472,45 @@ async def _ws_handler(websocket):
                     )
                     summary, _ = normalize_model_output(response2["choices"][0]["text"])
                     if summary:
-                        await websocket.send(json.dumps({"type": "message", "content": summary}))
-                        history.append({"role": "model", "content": summary})
+                        checked_summary = summary
+                        code_check_report = build_code_check_report(summary)
+                        if code_check_report:
+                            await websocket.send(json.dumps({
+                                "type": "code_check_status",
+                                "status": "running",
+                                "message": "Running code checks on generated code...",
+                            }))
+                            await websocket.send(json.dumps({
+                                "type": "code_check_status",
+                                "status": "done",
+                                "message": code_check_report["summary"],
+                                "details": code_check_report["details"],
+                                "issues": code_check_report["issues"],
+                            }))
+                            checked_summary = f"{summary}\n\n{format_code_check_report(code_check_report)}".strip()
+                        await websocket.send(json.dumps({"type": "message", "content": checked_summary}))
+                        history.append({"role": "model", "content": checked_summary})
                     break
 
                 else:
-                    await websocket.send(json.dumps({"type": "message", "content": response_text}))
-                    history.append({"role": "model", "content": response_text})
+                    checked_response = response_text
+                    code_check_report = build_code_check_report(response_text)
+                    if code_check_report:
+                        await websocket.send(json.dumps({
+                            "type": "code_check_status",
+                            "status": "running",
+                            "message": "Running code checks on generated code...",
+                        }))
+                        await websocket.send(json.dumps({
+                            "type": "code_check_status",
+                            "status": "done",
+                            "message": code_check_report["summary"],
+                            "details": code_check_report["details"],
+                            "issues": code_check_report["issues"],
+                        }))
+                        checked_response = f"{response_text}\n\n{format_code_check_report(code_check_report)}".strip()
+                    await websocket.send(json.dumps({"type": "message", "content": checked_response}))
+                    history.append({"role": "model", "content": checked_response})
                     break
 
         await websocket.send(json.dumps({"type": "status", "status": "ready"}))
@@ -1371,7 +1574,9 @@ Current UTC date: {current_utc_date}
 
 
 Rules:
-- Never use markdown such as astrisks around responses. Only respond with pure text and no markdown
+- Keep responses plain and direct by default.
+- When you provide code, always use fenced code blocks with a language tag (for example ```python).
+- Prefer safe, production-ready coding practices and avoid patterns that can break at runtime.
 - After a tool call, wait for the result before doing anything else.
 - When web research is provided, rely on it, cross-reference claims, prioritize up-to-date evidence, and clearly call out uncertainty when sources conflict.
 - When web research is provided, include the source URLs you used in your final answer.
@@ -1544,13 +1749,25 @@ Rules:
 
                         summary, _ = normalize_model_output(response2["choices"][0]["text"])
                         if summary:
-                            print(f"{Colors.GREEN}Pace:{Colors.RESET} {summary}")
-                            history.append({"role": "model", "content": summary})
+                            checked_summary = summary
+                            code_check_report = build_code_check_report(summary)
+                            if code_check_report:
+                                print(f"{Colors.CYAN}Running code checks on generated code...{Colors.RESET}")
+                                print(f"{Colors.CYAN}{code_check_report['summary']}{Colors.RESET}")
+                                checked_summary = f"{summary}\n\n{format_code_check_report(code_check_report)}".strip()
+                            print(f"{Colors.GREEN}Pace:{Colors.RESET} {checked_summary}")
+                            history.append({"role": "model", "content": checked_summary})
                         break
 
                     else:
-                        print(f"{Colors.GREEN}Pace:{Colors.RESET} {response_text}")
-                        history.append({"role": "model", "content": response_text})
+                        checked_response = response_text
+                        code_check_report = build_code_check_report(response_text)
+                        if code_check_report:
+                            print(f"{Colors.CYAN}Running code checks on generated code...{Colors.RESET}")
+                            print(f"{Colors.CYAN}{code_check_report['summary']}{Colors.RESET}")
+                            checked_response = f"{response_text}\n\n{format_code_check_report(code_check_report)}".strip()
+                        print(f"{Colors.GREEN}Pace:{Colors.RESET} {checked_response}")
+                        history.append({"role": "model", "content": checked_response})
                         break
 
         except KeyboardInterrupt:
