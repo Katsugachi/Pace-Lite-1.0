@@ -1207,7 +1207,7 @@ function escapeHTML(str) {
 
 function formatText(str) {
   const text = String(str ?? '');
-  const INTERNAL_INLINE_TOKEN_RE = /^(CODE|LINK)_\d+$/i;
+  const INTERNAL_INLINE_TOKEN_RE = /^(CODE|LINK|STRONG)_\d+$/i;
   function normalizeIncomingText(raw) {
     const MIN_ESCAPED_NEWLINES = 3;
     const ESCAPED_TO_REAL_NEWLINE_RATIO = 2;
@@ -1488,7 +1488,7 @@ function formatText(str) {
         }
 
         const htmlLines = lines.slice(i, j);
-        // MIN_HTML_BLOCK_LINES + MIN_HTML_TAG_LINES reduces false positives from short snippets while
+        // Requiring both MIN_HTML_BLOCK_LINES and MIN_HTML_TAG_LINES reduces false positives from short snippets while
         // still catching common compact HTML documents that may omit explicit </html> close tags.
         const hasHtmlDocumentShape =
           sawHtmlClose || (htmlLines.length >= MIN_HTML_BLOCK_LINES && htmlTagLineCount >= MIN_HTML_TAG_LINES);
