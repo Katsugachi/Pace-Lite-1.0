@@ -1235,9 +1235,6 @@ function formatText(str) {
         .replace(/\\"/g, '"');
     }
 
-    value = value
-      .replace(/@@CODE_?\d+@@/g, '`code`')
-      .replace(/@@LINK_?\d+@@/g, 'link');
 
     return value;
   }
@@ -1271,6 +1268,7 @@ function formatText(str) {
       return token;
     });
     const withStrongTokens = withLinkTokens.replace(/@@([^\n@][^@\n]*)@@/g, (match, content) => {
+      if (/^[A-Z]+_\d+$/.test(content)) return match;  
       if (INTERNAL_INLINE_TOKEN_RE.test(content)) return match;
       const token = `@@STRONG_${strongTokens.length}@@`;
       strongTokens.push(`<strong>${escapeHTML(content)}</strong>`);
