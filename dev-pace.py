@@ -1264,11 +1264,11 @@ NON_ASCII_CODE_RE = re.compile(r"[^\x00-\x7F]")
 HARDCODED_CRED_RE = re.compile(
     r'''
     (?ix)
-    (?:\b(?:password|passwd|secret|api[_\-]?key|token|auth)\b\s*=\s*["'][^"'\n]{8,}["'])
+    (?:\b(?:password|passwd|secret|api[_\-]?key|token|auth)\b\s*=\s*(?:"(?:\\.|[^"\\\n]){8,}"|'(?:\\.|[^'\\\n]){8,}'))
     |
-    (?:["'](?:password|passwd|secret|api[_\-]?key|token|auth)["']\s*:\s*["'][^"'\n]{8,}["'])
+    (?:["'](?:password|passwd|secret|api[_\-]?key|token|auth)["']\s*:\s*(?:"(?:\\.|[^"\\\n]){8,}"|'(?:\\.|[^'\\\n]){8,}'))
     |
-    (?:\b(?:os\.)?getenv\s*\(\s*["'][A-Za-z0-9_\-]+["']\s*,\s*["'][^"'\n]{8,}["']\s*\))
+    (?:\b(?:os\.)?getenv\s*\(\s*["'][A-Za-z0-9_\-]+["']\s*,\s*(?:"(?:\\.|[^"\\\n]){8,}"|'(?:\\.|[^'\\\n]){8,}')\s*\))
     ''',
 )
 BARE_EXCEPT_RE = re.compile(r"^\s*except\s*:", re.MULTILINE)
@@ -1529,7 +1529,7 @@ def _run_code_checks_for_block(language, code):
 
         # Check 9: No empty function or class bodies (all-pass or docstring-only bodies)
         if tree is not None:
-            empty_defs = []
+            empty_definitions = []
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                     real_stmts = [
@@ -1542,39 +1542,14 @@ def _run_code_checks_for_block(language, code):
                         )
                     ]
                     if not real_stmts:
-                        empty_defs.append(getattr(node, "name", "?"))
+                        empty_definitions.append(getattr(node, "name", "?"))
             record_check(
-                not empty_defs,
+                not empty_definitions,
                 (
-                    f"Empty body in {_format_short_list(empty_defs)} — every function and class "
+                    f"Empty body in {_format_short_list(empty_definitions)} — every function and class "
                     f"must have a real implementation."
                 ),
             )
-
-            # Check 10: Non-English identifier names (via AST)
-            # Only run this when code-level non-ASCII check passed to avoid duplicate issues.
-            non_ascii_ids = []
-            if not has_non_ascii:
-                for node in ast.walk(tree):
-                    name = None
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                        name = node.name
-                    elif isinstance(node, ast.Name):
-                        name = node.id
-                    elif isinstance(node, ast.arg):
-                        name = node.arg
-                    elif isinstance(node, ast.Attribute):
-                        name = node.attr
-                    if name and NON_ASCII_CODE_RE.search(name):
-                        non_ascii_ids.append(name)
-                if non_ascii_ids:
-                    record_check(
-                        False,
-                        (
-                            f"Non-English identifier(s) in Python code: {_format_short_list(non_ascii_ids)} "
-                            f"— use English names."
-                        ),
-                    )
 
     elif language == "json":
         try:
