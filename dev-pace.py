@@ -1256,6 +1256,16 @@ MAX_WRAPPER_STRIP_PASSES = 8
 MAX_REPORTED_ISSUES_PER_BLOCK = 5
 MAX_REPORTED_CODE_CHECK_DETAILS = 15
 CODE_BLOCK_RE = re.compile(r"```([^\n`]*)\r?\n([\s\S]*?)```")
+PLACEHOLDER_TOKEN_RE = re.compile(r"@@([A-Za-z]+(?:_)?\d+)@@")
+CODE_PLACEHOLDER_NAME_RE = re.compile(r"code(?:_)?\d+")
+PLACEHOLDER_MAPPING_RE = re.compile(
+    r"(@@[A-Za-z]+(?:_)?\d+@@)\s*(?:=|:|-)\s*(?:`([^`\n]+)`|\"([^\"\n]+)\"|'([^'\n]+)')",
+    re.IGNORECASE,
+)
+PLACEHOLDER_MAPPING_LINE_RE = re.compile(
+    r"^\s*@@[A-Za-z]+(?:_)?\d+@@\s*(?:=|:|-)\s*(?:`[^`\n]+`|\"[^\"\n]+\"|'[^'\n]+')\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 CODE_PLACEHOLDER_RE = re.compile(
     r"\b(todo|fixme|insert[_\s-]*here|your[_\s-]*api[_\s-]*key|placeholder)\b",
     re.IGNORECASE,
@@ -1309,7 +1319,29 @@ def normalize_model_output(text):
         wrappers_removed = True
         cleaned = updated
 
-    cleaned = re.sub(r'@@[A-Za-z]+\d+@@', 'code', cleaned, flags=re.IGNORECASE)
+    placeholder_mappings = {}
+    for match in PLACEHOLDER_MAPPING_RE.finditer(cleaned):
+        token = match.group(1)
+        resolved_value = match.group(2) or match.group(3) or match.group(4) or ""
+        if token and resolved_value:
+            placeholder_mappings[token] = resolved_value.strip()
+
+    for token, resolved_value in placeholder_mappings.items():
+        cleaned = cleaned.replace(token, resolved_value)
+
+    if placeholder_mappings:
+        cleaned = PLACEHOLDER_MAPPING_LINE_RE.sub("", cleaned)
+
+    def _placeholder_fallback(match):
+        placeholder_name = (match.group(1) or "").lower()
+        return "code" if CODE_PLACEHOLDER_NAME_RE.fullmatch(placeholder_name) else ""
+
+    cleaned = PLACEHOLDER_TOKEN_RE.sub(_placeholder_fallback, cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    cleaned = re.sub(r",\s*,+", ", ", cleaned)
+    cleaned = re.sub(r"\(\s*\)", "", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
     return cleaned, wrappers_removed
