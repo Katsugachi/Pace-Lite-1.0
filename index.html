@@ -1226,18 +1226,18 @@ function formatText(str) {
       .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, href) => {
         const url = safeHref(href);
         if (!url) return m;
-        return `<a href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+        return `<a href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(label)}</a>`;
       })
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
       .replace(/__([^_]+)__/g, '<strong>$1</strong>')
-      .replace(/\*([^*\n]+)\*/g, '<em>$1</em>')
-      .replace(/_([^_\n]+)_/g, '<em>$1</em>')
+      .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+      .replace(/_([^_]+)_/g, '<em>$1</em>')
       .replace(/~~([^~]+)~~/g, '<del>$1</del>');
 
     return escaped.replace(/@@CODE_(\d+)@@/g, (_, idx) => codeTokens[Number(idx)] || '');
   }
 
-  function renderTextMarkdown(raw) {
+  function renderTextMarkdown(raw, depth = 0) {
     const chunk = String(raw ?? '');
     if (!chunk.trim()) return '';
     const lines = chunk.split('\n');
@@ -1262,7 +1262,11 @@ function formatText(str) {
 
     function flushQuote() {
       if (!quoteBuffer.length) return;
-      out.push(`<blockquote>${renderTextMarkdown(quoteBuffer.join('\n'))}</blockquote>`);
+      if (depth >= 5) {
+        out.push(`<blockquote>${applyInlineMarkdown(quoteBuffer.join(' '))}</blockquote>`);
+      } else {
+        out.push(`<blockquote>${renderTextMarkdown(quoteBuffer.join('\n'), depth + 1)}</blockquote>`);
+      }
       quoteBuffer = [];
     }
 
