@@ -1491,7 +1491,6 @@ async def _ws_handler(websocket):
                                 "details": code_check_report["details"],
                                 "issues": code_check_report["issues"],
                             }))
-                            checked_summary = f"{summary}\n\n{format_code_check_report(code_check_report)}".strip()
                         await websocket.send(json.dumps({"type": "message", "content": checked_summary}))
                         history.append({"role": "model", "content": checked_summary})
                     break
@@ -1512,7 +1511,6 @@ async def _ws_handler(websocket):
                             "details": code_check_report["details"],
                             "issues": code_check_report["issues"],
                         }))
-                        checked_response = f"{response_text}\n\n{format_code_check_report(code_check_report)}".strip()
                     await websocket.send(json.dumps({"type": "message", "content": checked_response}))
                     history.append({"role": "model", "content": checked_response})
                     break
