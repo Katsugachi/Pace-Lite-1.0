@@ -1097,7 +1097,7 @@ function appendUserMessage(text) {
   const outer = document.createElement('div');
   outer.className = 'msg-outer user-outer';
 
-  const copyBtn = `<button class="copy-btn" onclick="copyMessage(${JSON.stringify(text)}, this)">
+  const copyBtn = `<button class="copy-btn">
     <svg width="11" height="11" viewBox="0 0 11 11" fill="none" xmlns="http://www.w3.org/2000/svg">
       <rect x="3.5" y="3.5" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.2"/>
       <path d="M2 7.5H1.5A.5.5 0 011 7V1.5A.5.5 0 011.5 1H7a.5.5 0 01.5.5V2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
@@ -1115,6 +1115,10 @@ function appendUserMessage(text) {
     </div>
     ${copyBtn}
   `;
+  const copyBtnEl = outer.querySelector('.copy-btn');
+  if (copyBtnEl) {
+    copyBtnEl.addEventListener('click', () => copyMessage(String(text ?? ''), copyBtnEl));
+  }
   chat.appendChild(outer);
   scrollToBottom();
 }
@@ -1142,7 +1146,7 @@ function appendPaceMessage(text, toolName, toolResult) {
   }
 
   const rawText = [toolResult, text].filter(Boolean).join('\n\n');
-  const copyBtn = `<button class="copy-btn" onclick="copyMessage(${JSON.stringify(rawText)}, this)">
+  const copyBtn = `<button class="copy-btn">
     <svg width="11" height="11" viewBox="0 0 11 11" fill="none" xmlns="http://www.w3.org/2000/svg">
       <rect x="3.5" y="3.5" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.2"/>
       <path d="M2 7.5H1.5A.5.5 0 011 7V1.5A.5.5 0 011.5 1H7a.5.5 0 01.5.5V2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
@@ -1159,6 +1163,10 @@ function appendPaceMessage(text, toolName, toolResult) {
     </div>
     ${copyBtn}
   `;
+  const copyBtnEl = outer.querySelector('.copy-btn');
+  if (copyBtnEl) {
+    copyBtnEl.addEventListener('click', () => copyMessage(rawText, copyBtnEl));
+  }
   chat.appendChild(outer);
   scrollToBottom();
 }
