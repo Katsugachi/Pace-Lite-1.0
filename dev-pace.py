@@ -53,7 +53,12 @@ WEB_SOURCE_SNIPPET_CHARS = 420
 MIN_HISTORY_CHAR_BUDGET = 1000
 HISTORY_MESSAGE_OVERHEAD_CHARS = 32
 CODE_RELATED_KEYWORDS_PATTERN = re.compile(
-    r"\b(code|python|javascript|java|c\+\+|cpp|tutorial|error|bug|function|api|class|framework|syntax|compile|debug|library|package|module|import|export|variable|loop|array|database|sql|html|css|react|node|git|cdn)\b",
+    r"\b(code|python|javascript|java|c\+\+|cpp|tutorial|error|bug|function|api|class|framework|syntax|compile|debug|library|package|module|import|export|variable|loop|array|database|sql|html|css|react|node|git)\b",
+    re.IGNORECASE,
+)
+CDN_HINT_PATTERN = re.compile(r"\bcdn\b", re.IGNORECASE)
+WEB_DEV_CONTEXT_PATTERN = re.compile(
+    r"\b(html|css|javascript|js|typescript|ts|react|vue|angular|node|npm|library|framework|bootstrap|tailwind)\b",
     re.IGNORECASE,
 )
 QUERY_NOISE_PATTERN = re.compile(
@@ -567,7 +572,9 @@ def build_search_queries(user_text):
     explicit_years = [y for y in _extract_years(text) if y <= current_year + 1]
     has_current_hint = bool(CURRENT_INFO_HINT_PATTERN.search(text))
 
-    is_code_related = bool(CODE_RELATED_KEYWORDS_PATTERN.search(text))
+    asks_for_cdn = bool(CDN_HINT_PATTERN.search(text))
+    has_web_dev_context = bool(WEB_DEV_CONTEXT_PATTERN.search(text))
+    is_code_related = bool(CODE_RELATED_KEYWORDS_PATTERN.search(text)) or (asks_for_cdn and has_web_dev_context)
     queries = []
 
     if explicit_years:
@@ -578,14 +585,14 @@ def build_search_queries(user_text):
 
     if is_code_related:
         queries.append(f"{focus} official documentation {current_year}")
-        if "cdn" in text.lower():
+        if asks_for_cdn:
             queries.append(f"{focus} cdn integration guide {current_year}")
         else:
             queries.append(f"{focus} tutorial {current_year}")
     else:
         if has_current_hint or not is_super_basic_prompt(text):
             queries.append(f"{focus} latest updates {current_year}")
-        queries.append(f"{focus} in-depth overview")
+        queries.append(f"{focus} facts and references")
 
     unique = []
     seen = set()
