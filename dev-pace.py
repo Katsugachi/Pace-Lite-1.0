@@ -998,6 +998,7 @@ EDIT_FILE_BODY_RE = re.compile(r"<search>(.*?)</search>\s*<replace>(.*?)</replac
 RUN_COMMAND_TOOL_RE = re.compile(r'<run_command\s+cmd=(["\'])([^"\']+)\1\s*/>', re.DOTALL)
 MAX_WRAPPER_STRIP_PASSES = 8
 MAX_REPORTED_ISSUES_PER_BLOCK = 2
+MAX_REPORTED_CODE_CHECK_DETAILS = 8
 CODE_BLOCK_RE = re.compile(r"```([^\n`]*)\r?\n([\s\S]*?)```")
 CODE_PLACEHOLDER_RE = re.compile(
     r"\b(todo|fixme|insert[_\s-]*here|your[_\s-]*api[_\s-]*key|placeholder)\b",
@@ -1258,7 +1259,7 @@ def build_code_check_report(text):
 
     return {
         "summary": summary,
-        "details": details[:8],
+        "details": details[:MAX_REPORTED_CODE_CHECK_DETAILS],
         "issues": issue_count,
     }
 

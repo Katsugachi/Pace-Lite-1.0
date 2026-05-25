@@ -158,6 +158,7 @@
     flex-shrink: 0;
     transition: background 0.3s;
   }
+  .status-dot.ready { background: #4caf8a; }
   .status-dot.loading { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
   .status-dot.checking { background: #d18a2d; animation: pulse 1.1s ease-in-out infinite; }
   .status-dot.offline { background: var(--text-muted); }
@@ -911,17 +912,15 @@ function handleServerMessage(data) {
 function setStatus(state) {
   statusDot.className = 'status-dot';
   if (state === 'ready') {
-    statusDot.style.background = '#4caf8a';
+    statusDot.classList.add('ready');
     statusLabel.textContent = 'Ready';
   } else if (state === 'thinking') {
     statusDot.classList.add('loading');
     statusLabel.textContent = 'Thinking…';
   } else if (state === 'checking') {
-    statusDot.style.background = '';
     statusDot.classList.add('checking');
     statusLabel.textContent = 'Checking code…';
   } else if (state === 'offline') {
-    statusDot.style.background = '';
     statusDot.classList.add('offline');
     statusLabel.textContent = 'Offline';
   }
