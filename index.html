@@ -1207,7 +1207,33 @@ function escapeHTML(str) {
 
 function formatText(str) {
   const text = String(str ?? '');
-  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  function normalizeIncomingText(raw) {
+    const MIN_ESCAPED_NEWLINES = 3;
+    const ESCAPED_TO_REAL_NEWLINE_RATIO = 2;
+    let value = String(raw ?? '');
+
+    const escapedNewlineCount = (value.match(/\\n/g) || []).length;
+    const realNewlineCount = (value.match(/\n/g) || []).length;
+    const looksEscaped =
+      escapedNewlineCount >= MIN_ESCAPED_NEWLINES
+      && escapedNewlineCount > (realNewlineCount * ESCAPED_TO_REAL_NEWLINE_RATIO);
+    if (looksEscaped) {
+      value = value
+        .replace(/\\r\\n/g, '\n')
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\\`/g, '`')
+        .replace(/\\"/g, '"');
+    }
+
+    value = value
+      .replace(/@@CODE_?\d+@@/g, '`code`')
+      .replace(/@@LINK_?\d+@@/g, 'link');
+
+    return value;
+  }
+
+  const normalized = normalizeIncomingText(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   let html = '';
 
   function safeHref(href) {
