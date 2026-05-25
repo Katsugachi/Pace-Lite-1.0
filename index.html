@@ -184,6 +184,30 @@
   .internet-pill.unavailable {
     color: var(--text-muted);
   }
+  .internet-mode-btn {
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 5px 11px;
+    background: var(--surface2);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    white-space: nowrap;
+  }
+  .internet-mode-btn:hover {
+    border-color: var(--border2);
+    color: var(--text-primary);
+  }
+  .internet-mode-btn.on {
+    color: #1d7f63;
+    border-color: rgba(29,127,99,0.35);
+    background: rgba(76,175,138,0.12);
+  }
+  .internet-mode-btn.off {
+    color: var(--text-muted);
+  }
 
   .btn-icon {
     width: 34px;
@@ -700,6 +724,7 @@
       <div class="status-dot offline" id="statusDot"></div>
       <span class="status-label" id="statusLabel">Ready</span>
       <span class="internet-pill unavailable" id="internetStatus">Internet Unavailable</span>
+      <button class="internet-mode-btn on" id="internetModeToggle" title="Toggle internet usage">Web On</button>
 
       <!-- Clear button -->
       <button class="btn-icon" id="clearBtn" title="Clear conversation">
@@ -788,11 +813,13 @@ const welcomeScreen = document.getElementById('welcomeScreen');
 const statusDot = document.getElementById('statusDot');
 const statusLabel = document.getElementById('statusLabel');
 const internetStatus = document.getElementById('internetStatus');
+const internetModeToggle = document.getElementById('internetModeToggle');
 const searchProgress = document.getElementById('searchProgress');
 const searchProgressLog = document.getElementById('searchProgressLog');
 let messages = []; // {role, content}
 let isThinking = false;
 let sessionStarted = false;
+let internetModeEnabled = true;
 
 // WebSocket / IPC – connects to Python backend via WebSocket on localhost:7070
 // Falls back to a "no backend" graceful state if not connected.
@@ -848,6 +875,7 @@ function handleServerMessage(data) {
   }
   if (data.type === 'internet_status') {
     setInternetStatus(Boolean(data.available));
+    if (typeof data.enabled === 'boolean') setInternetMode(Boolean(data.enabled));
     return;
   }
   if (data.type === 'search_progress') {
@@ -895,6 +923,12 @@ function setInternetStatus(available) {
     internetStatus.classList.add('unavailable');
     internetStatus.textContent = 'Internet Unavailable';
   }
+}
+
+function setInternetMode(enabled) {
+  internetModeEnabled = Boolean(enabled);
+  internetModeToggle.className = 'internet-mode-btn ' + (internetModeEnabled ? 'on' : 'off');
+  internetModeToggle.textContent = internetModeEnabled ? 'Web On' : 'Web Off';
 }
 
 function appendSearchProgress(message, query) {
@@ -1151,6 +1185,14 @@ function applyTheme(dark) {
 themeToggle.addEventListener('click', () => {
   const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
   applyTheme(!isDark);
+});
+
+internetModeToggle.addEventListener('click', () => {
+  const nextMode = !internetModeEnabled;
+  setInternetMode(nextMode);
+  if (ws && wsConnected) {
+    ws.send(JSON.stringify({ type: 'internet_mode', enabled: nextMode }));
+  }
 });
 
 // Restore saved theme
