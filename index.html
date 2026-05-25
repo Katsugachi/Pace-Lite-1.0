@@ -1228,7 +1228,7 @@ function formatText(str) {
       .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, href) => {
         const url = safeHref(href);
         if (!url) return m;
-        return `<a href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(label)}</a>`;
+        return `<a href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
       })
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
       .replace(/__([^_]+)__/g, '<strong>$1</strong>')
