@@ -56,6 +56,11 @@ CODE_RELATED_KEYWORDS_PATTERN = re.compile(
     r"\b(code|python|javascript|java|c\+\+|cpp|tutorial|error|bug|function|api|class|framework|syntax|compile|debug|library|package|module|import|export|variable|loop|array|database|sql|html|css|react|node|git)\b",
     re.IGNORECASE,
 )
+CDN_HINT_PATTERN = re.compile(r"\bcdn\b", re.IGNORECASE)
+WEB_DEV_CONTEXT_PATTERN = re.compile(
+    r"\b(html|css|javascript|js|typescript|ts|react|vue|angular|node|npm|library|framework|bootstrap|tailwind)\b",
+    re.IGNORECASE,
+)
 QUERY_NOISE_PATTERN = re.compile(
     r"\b(can you|could you|would you|please|tell me|show me|help me|i need|i want|"
     r"search for|look up|find|what is|what are|how do i|how to)\b",
@@ -71,6 +76,14 @@ CURRENT_INFO_HINT_PATTERN = re.compile(
     r"\b(latest|current|recent|today|now|new|updated|update|up-to-date|as of)\b",
     re.IGNORECASE,
 )
+INTERNET_RESEARCH_TRIGGER_PATTERN = re.compile(
+    r"\b(what is|what are|who is|when did|where is|latest|current|recent|today|news|price|release|version|documentation|docs|official|tutorial|guide|api|reference|cdn|install|setup|fix|error|troubleshoot|compare|difference)\b",
+    re.IGNORECASE,
+)
+LOCAL_ONLY_INTENT_PATTERN = re.compile(
+    r"\b(write|draft|compose|story|poem|song|lyrics|essay|narrative|fiction|scene|dialogue|imagine|brainstorm|summarize|paraphrase|rewrite)\b",
+    re.IGNORECASE,
+)
 SUPER_BASIC_PROMPTS = {
     "hi", "hello", "hey", "yo", "sup", "what's up", "how are you",
     "thanks", "thank you", "ok", "okay", "cool", "nice", "bye", "goodbye",
@@ -84,6 +97,7 @@ _ws_state = {
     "system_prompt": "",
     "internet_available": False,
     "internet_last_checked": 0.0,
+    "internet_enabled": True,
     "startup_issue": "",
     # Re-entrant lock avoids deadlock when handlers refresh internet status
     # while already holding shared-state lock for history updates.
@@ -254,6 +268,45 @@ def get_internet_status(force=False):
         _ws_state["internet_last_checked"] = time.time()
 
     return current
+
+def get_internet_mode():
+    with _ws_state["lock"]:
+        return bool(_ws_state.get("internet_enabled", True))
+
+def set_internet_mode(enabled):
+    with _ws_state["lock"]:
+        _ws_state["internet_enabled"] = bool(enabled)
+
+def build_internet_status_payload(force=False):
+    available = get_internet_status(force=force)
+    enabled = get_internet_mode()
+    return {
+        "type": "internet_status",
+        "available": available,
+        "enabled": enabled,
+        "active": enabled and available,
+    }
+
+def _normalize_terminal_command(text):
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+def parse_internet_mode_command(text):
+    normalized = _normalize_terminal_command(text)
+    if normalized in {"/internet", "internet", "/internet status", "internet status"}:
+        return "status"
+    if normalized in {"/internet on", "internet on"}:
+        return "on"
+    if normalized in {"/internet off", "internet off"}:
+        return "off"
+    if normalized in {"/internet toggle", "internet toggle"}:
+        return "toggle"
+    return None
+
+def analyze_code_query(text):
+    asks_for_cdn = bool(CDN_HINT_PATTERN.search(text or ""))
+    has_web_dev_context = bool(WEB_DEV_CONTEXT_PATTERN.search(text or ""))
+    has_code_keywords = bool(CODE_RELATED_KEYWORDS_PATTERN.search(text or ""))
+    return has_code_keywords or (asks_for_cdn and has_web_dev_context), asks_for_cdn
 
 def _flatten_related_topics(items):
     out = []
@@ -538,6 +591,28 @@ def is_super_basic_prompt(text):
 
     return False
 
+def should_use_internet_research(text):
+    prompt = (text or "").strip()
+    if not prompt:
+        return False
+
+    if is_super_basic_prompt(prompt):
+        return False
+
+    has_trigger = bool(INTERNET_RESEARCH_TRIGGER_PATTERN.search(prompt))
+    has_local_only_intent = bool(LOCAL_ONLY_INTENT_PATTERN.search(prompt))
+    is_code_related, asks_for_cdn = analyze_code_query(prompt)
+    has_current_hint = bool(CURRENT_INFO_HINT_PATTERN.search(prompt))
+    asks_question = "?" in prompt
+
+    if has_local_only_intent and not (has_trigger or has_current_hint or asks_for_cdn):
+        return False
+
+    if is_code_related or asks_for_cdn or has_current_hint:
+        return True
+
+    return has_trigger and asks_question
+
 def build_search_queries(user_text):
     text = (user_text or "").strip()
     if not text:
@@ -548,7 +623,7 @@ def build_search_queries(user_text):
     explicit_years = [y for y in _extract_years(text) if y <= current_year + 1]
     has_current_hint = bool(CURRENT_INFO_HINT_PATTERN.search(text))
 
-    is_code_related = bool(CODE_RELATED_KEYWORDS_PATTERN.search(text))
+    is_code_related, asks_for_cdn = analyze_code_query(text)
     queries = []
 
     if explicit_years:
@@ -556,13 +631,16 @@ def build_search_queries(user_text):
         queries.append(f"{focus} {target_year}")
     else:
         queries.append(f"{focus} {current_year}")
-        if has_current_hint or not is_super_basic_prompt(text):
-            queries.append(f"{focus} latest updates {current_year}")
 
     if is_code_related:
-        queries.append(f"{focus} tutorial {current_year}")
         queries.append(f"{focus} official documentation {current_year}")
+        if asks_for_cdn:
+            queries.append(f"{focus} cdn integration guide {current_year}")
+        else:
+            queries.append(f"{focus} tutorial {current_year}")
     else:
+        if has_current_hint or not is_super_basic_prompt(text):
+            queries.append(f"{focus} latest updates {current_year}")
         queries.append(f"{focus} facts")
 
     unique = []
@@ -1062,10 +1140,7 @@ def _build_prompt(history, system_prompt):
 
 async def _ws_handler(websocket):
     """Handle one browser client connection."""
-    await websocket.send(json.dumps({
-        "type": "internet_status",
-        "available": get_internet_status(),
-    }))
+    await websocket.send(json.dumps(build_internet_status_payload()))
 
     async for raw in websocket:
         try:
@@ -1079,6 +1154,14 @@ async def _ws_handler(websocket):
             with _ws_state["lock"]:
                 _ws_state["history"].clear()
                 _ws_state["history"].append({"role": "system", "content": _ws_state["system_prompt"]})
+            continue
+
+        if msg_type == "internet_mode":
+            requested = msg.get("enabled")
+            if not isinstance(requested, bool):
+                continue
+            set_internet_mode(requested)
+            await websocket.send(json.dumps(build_internet_status_payload(force=True)))
             continue
 
         if msg_type != "user":
@@ -1099,11 +1182,14 @@ async def _ws_handler(websocket):
 
             history.append({"role": "user", "content": user_text})
             user_requested_tool = user_explicitly_requested_tool(user_text)
+            internet_enabled = get_internet_mode()
 
             internet_available = get_internet_status(force=True)
             await websocket.send(json.dumps({
                 "type": "internet_status",
                 "available": internet_available,
+                "enabled": internet_enabled,
+                "active": internet_enabled and internet_available,
             }))
 
             if startup_issue or llm is None:
@@ -1119,7 +1205,7 @@ async def _ws_handler(websocket):
             continue
 
         with _ws_state["lock"]:
-            should_search = internet_available and not is_super_basic_prompt(user_text)
+            should_search = internet_enabled and internet_available and should_use_internet_research(user_text)
             if should_search:
                 search_progress_tasks = []
 
@@ -1147,6 +1233,15 @@ async def _ws_handler(websocket):
                             f"{web_research}"
                         ),
                     })
+            elif not internet_enabled:
+                await websocket.send(json.dumps({
+                    "type": "search_progress",
+                    "phase": "disabled",
+                    "step": 0,
+                    "total": 0,
+                    "query": "",
+                    "message": "Internet usage is turned off. Using local model knowledge only.",
+                }))
             elif not internet_available:
                 await websocket.send(json.dumps({
                     "type": "search_progress",
@@ -1296,6 +1391,7 @@ Rules:
     _ws_state["llm"] = llm
     _ws_state["history"] = history
     _ws_state["system_prompt"] = system_prompt
+    _ws_state["internet_enabled"] = True
     _ws_state["internet_available"] = get_internet_status(force=True)
     _ws_state["internet_last_checked"] = time.time()
     _ws_state["startup_issue"] = startup_issue or ""
@@ -1313,8 +1409,10 @@ Rules:
 
     print(f"\n{Colors.BOLD}Welcome to PACE 1.0 Lite!{Colors.RESET}")
     print("I can help understand an extremely broad range of information and answer questions locally")
+    print(f"Internet mode: {Colors.GREEN}{'Enabled' if _ws_state['internet_enabled'] else 'Disabled'}{Colors.RESET}")
     print(f"Internet access: {Colors.GREEN if _ws_state['internet_available'] else Colors.YELLOW}{'Available' if _ws_state['internet_available'] else 'Unavailable'}{Colors.RESET}")
     print(f"Current working folder: {Colors.CYAN}{Path(__file__).resolve().parent}{Colors.RESET}")
+    print("Internet commands: /internet on | /internet off | /internet toggle | /internet status")
     print("Type 'exit' or 'quit' to close.\n")
 
     while True:
@@ -1329,6 +1427,35 @@ Rules:
                 print(f"{Colors.GREEN}Goodbye! See you later!{Colors.RESET}")
                 break
 
+            internet_mode_command = parse_internet_mode_command(user_input)
+            if internet_mode_command == "status":
+                internet_enabled = get_internet_mode()
+                internet_available = get_internet_status(force=True)
+                mode_text = "enabled" if internet_enabled else "disabled"
+                access_text = "available" if internet_available else "unavailable"
+                print(f"{Colors.CYAN}Internet mode is {mode_text}; internet access is currently {access_text}.{Colors.RESET}")
+                continue
+            if internet_mode_command == "on":
+                set_internet_mode(True)
+                internet_available = get_internet_status(force=True)
+                access_text = "available" if internet_available else "unavailable"
+                print(f"{Colors.GREEN}Internet mode enabled. Internet access is currently {access_text}.{Colors.RESET}")
+                continue
+            if internet_mode_command == "off":
+                set_internet_mode(False)
+                print(f"{Colors.YELLOW}Internet mode disabled. Pace will use local model knowledge only.{Colors.RESET}")
+                continue
+            if internet_mode_command == "toggle":
+                new_mode = not get_internet_mode()
+                set_internet_mode(new_mode)
+                if new_mode:
+                    internet_available = get_internet_status(force=True)
+                    access_text = "available" if internet_available else "unavailable"
+                    print(f"{Colors.GREEN}Internet mode enabled. Internet access is currently {access_text}.{Colors.RESET}")
+                else:
+                    print(f"{Colors.YELLOW}Internet mode disabled. Pace will use local model knowledge only.{Colors.RESET}")
+                continue
+
             with _ws_state["lock"]:
                 history.append({"role": "user", "content": user_input})
 
@@ -1339,8 +1466,9 @@ Rules:
                     continue
 
                 user_requested_tool = user_explicitly_requested_tool(user_input)
+                internet_enabled = get_internet_mode()
                 internet_available = get_internet_status(force=True)
-                should_search = internet_available and not is_super_basic_prompt(user_input)
+                should_search = internet_enabled and internet_available and should_use_internet_research(user_input)
 
                 if should_search:
                     print(f"{Colors.BLUE}Web search: enabled for this prompt{Colors.RESET}")
@@ -1362,6 +1490,8 @@ Rules:
                                 f"{web_research}"
                             ),
                         })
+                elif not internet_enabled:
+                    print(f"{Colors.YELLOW}Internet mode is disabled. Using local model knowledge only.{Colors.RESET}")
                 elif not internet_available:
                     print(f"{Colors.YELLOW}Internet unavailable. Using local model knowledge only.{Colors.RESET}")
 
