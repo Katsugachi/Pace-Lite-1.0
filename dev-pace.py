@@ -1253,13 +1253,19 @@ GREP_FILES_TOOL_RE = re.compile(
     re.DOTALL,
 )
 MAX_WRAPPER_STRIP_PASSES = 8
-MAX_REPORTED_ISSUES_PER_BLOCK = 2
-MAX_REPORTED_CODE_CHECK_DETAILS = 8
+MAX_REPORTED_ISSUES_PER_BLOCK = 5
+MAX_REPORTED_CODE_CHECK_DETAILS = 15
 CODE_BLOCK_RE = re.compile(r"```([^\n`]*)\r?\n([\s\S]*?)```")
 CODE_PLACEHOLDER_RE = re.compile(
     r"\b(todo|fixme|insert[_\s-]*here|your[_\s-]*api[_\s-]*key|placeholder)\b",
     re.IGNORECASE,
 )
+NON_ASCII_CODE_RE = re.compile(r"[^\x00-\x7F]")
+HARDCODED_CRED_RE = re.compile(
+    r'(?:password|passwd|secret|api[_\-]?key|token|auth)\s*=\s*["\'][^"\']{4,}["\']',
+    re.IGNORECASE,
+)
+BARE_EXCEPT_RE = re.compile(r"^\s*except\s*:", re.MULTILINE)
 TOOL_INTENT_PATTERNS = [
     re.compile(r"\b(list|show)\b.*\b(files?|folders?|directories?)\b"),
     re.compile(r"\b(read|open|show)\b.*\bfile\b"),
@@ -1449,25 +1455,46 @@ def _run_code_checks_for_block(language, code):
             issues.append(issue_text)
 
     stripped = (code or "").strip()
+
+    # Check 1: Non-empty
     record_check(bool(stripped), "Code block is empty.")
+
+    # Check 2: Balanced delimiters
     record_check(
         _has_balanced_delimiters(code),
         "Potentially unbalanced delimiters detected ((), [], or {}).",
     )
+
+    # Check 3: No placeholder text
     record_check(
         not CODE_PLACEHOLDER_RE.search(code or ""),
-        "Found placeholder text (for example TODO/FIXME/placeholder).",
+        "Found placeholder text (e.g. TODO/FIXME/placeholder) — write complete, runnable code.",
+    )
+
+    # Check 4: No non-ASCII characters (catches Cyrillic/CJK identifiers and comments)
+    record_check(
+        not NON_ASCII_CODE_RE.search(code or ""),
+        "Non-ASCII characters found in code — all identifiers, comments, and text must be in English.",
+    )
+
+    # Check 5: No hardcoded credentials
+    record_check(
+        not HARDCODED_CRED_RE.search(code or ""),
+        "Possible hardcoded credential detected (password/secret/api_key/token literal assignment).",
     )
 
     if language == "python":
+        # Check 6: Syntax validity
+        tree = None
         try:
-            ast.parse(code or "")
+            tree = ast.parse(code or "")
             record_check(True)
         except SyntaxError as err:
             line = getattr(err, "lineno", "?")
             msg = getattr(err, "msg", "invalid syntax")
             record_check(False, f"Python syntax error at line {line}: {msg}.")
 
+        # Check 7: No unsafe patterns
         risky_patterns = []
         if re.search(r"\beval\s*\(", code or ""):
             risky_patterns.append("eval()")
@@ -1481,6 +1508,56 @@ def _run_code_checks_for_block(language, code):
             not risky_patterns,
             f"Potentially unsafe Python usage: {', '.join(risky_patterns)}.",
         )
+
+        # Check 8: No bare except clauses
+        record_check(
+            not BARE_EXCEPT_RE.search(code or ""),
+            "Bare 'except:' clause found — catch a specific exception type instead.",
+        )
+
+        # Check 9: No empty function or class bodies (all-pass or docstring-only bodies)
+        if tree is not None:
+            empty_defs = []
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    real_stmts = [
+                        s for s in node.body
+                        if not isinstance(s, ast.Pass)
+                        and not (
+                            isinstance(s, ast.Expr)
+                            and isinstance(s.value, ast.Constant)
+                            and isinstance(s.value.value, str)
+                        )
+                    ]
+                    if not real_stmts:
+                        empty_defs.append(getattr(node, "name", "?"))
+            label = ", ".join(empty_defs[:3]) + ("..." if len(empty_defs) > 3 else "")
+            record_check(
+                not empty_defs,
+                f"Empty body in {label} — every function and class must have a real implementation.",
+            )
+
+            # Check 10: Non-English identifier names (via AST)
+            non_ascii_ids = []
+            for node in ast.walk(tree):
+                name = None
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    name = node.name
+                elif isinstance(node, ast.Name):
+                    name = node.id
+                elif isinstance(node, ast.arg):
+                    name = node.arg
+                elif isinstance(node, ast.Attribute):
+                    name = node.attr
+                if name and any(ord(c) > 127 for c in name):
+                    non_ascii_ids.append(name)
+            if non_ascii_ids:
+                label = ", ".join(non_ascii_ids[:3]) + ("..." if len(non_ascii_ids) > 3 else "")
+                record_check(
+                    False,
+                    f"Non-English identifier(s) in Python code: {label} — use English names.",
+                )
+
     elif language == "json":
         try:
             json.loads(code or "")
@@ -1509,12 +1586,14 @@ def build_code_check_report(text):
     total_passed = 0
     details = []
     issue_count = 0
+    all_issues = []
 
     for index, block in enumerate(blocks, start=1):
         result = _run_code_checks_for_block(block["language"], block["code"])
         total_checks += result["checks_run"]
         total_passed += result["checks_passed"]
         issue_count += len(result["issues"])
+        all_issues.extend(result["issues"])
 
         status = "ok" if not result["issues"] else f"{len(result['issues'])} issue(s)"
         details.append(
@@ -1537,6 +1616,7 @@ def build_code_check_report(text):
         "summary": summary,
         "details": details[:MAX_REPORTED_CODE_CHECK_DETAILS],
         "issues": issue_count,
+        "issue_list": all_issues,
     }
 
 def format_code_check_report(report):
@@ -1546,8 +1626,8 @@ def format_code_check_report(report):
     lines.extend(report.get("details", []))
     return "\n".join(line for line in lines if line).strip()
 
-def _build_code_error_feedback(exec_results, lint_results):
-    """Format execution and lint failures into a re-prompt error message."""
+def _build_code_error_feedback(exec_results, lint_results, static_issues=None):
+    """Format execution, lint, and static-check failures into a re-prompt error message."""
     parts = []
     for lang, result in exec_results:
         if result.get("skipped"):
@@ -1561,6 +1641,9 @@ def _build_code_error_feedback(exec_results, lint_results):
             parts.append(section)
     for lang, lint_output in lint_results:
         parts.append(f"Lint issues ({lang}):\n{lint_output.strip()}")
+    if static_issues:
+        issues_text = "\n".join(f"- {i}" for i in static_issues)
+        parts.append(f"Static code issues found:\n{issues_text}")
     return "\n\n".join(parts)
 
 def _enforce_system_prompt_and_trim_history(history, system_prompt):
@@ -1857,21 +1940,31 @@ async def _ws_handler(websocket):
                                 "issues": 0,
                             }))
 
+                # ── Run static checks ──────────────────────────────────────
+                await websocket.send(json.dumps({
+                    "type": "code_check_status",
+                    "status": "running",
+                    "message": "Running static code checks…",
+                }))
+                code_check_report = build_code_check_report(final_response_text)
+                static_issues = code_check_report.get("issue_list", []) if code_check_report else []
+
                 # ── Check for failures and decide whether to retry ──────────
                 has_exec_fail = any(
                     not r.get("skipped") and r["exit_code"] != 0
                     for _, r in exec_results
                 )
                 has_lint_fail = bool(lint_results)
-                has_failures = has_exec_fail or has_lint_fail
+                has_static_fail = bool(static_issues)
+                has_failures = has_exec_fail or has_lint_fail or has_static_fail
 
                 if has_failures and code_attempt < MAX_CODE_RETRY_ATTEMPTS:
-                    error_feedback = _build_code_error_feedback(exec_results, lint_results)
+                    error_feedback = _build_code_error_feedback(exec_results, lint_results, static_issues)
                     await websocket.send(json.dumps({
                         "type": "code_check_status",
                         "status": "running",
                         "message": (
-                            f"Self-correcting code "
+                            f"Issues detected — self-correcting code "
                             f"(attempt {code_attempt + 1}/{MAX_CODE_RETRY_ATTEMPTS})…"
                         ),
                     }))
@@ -1879,21 +1972,15 @@ async def _ws_handler(websocket):
                     history.append({
                         "role": "user",
                         "content": (
-                            "The code you wrote produced errors. "
-                            "Fix them and rewrite the corrected code:\n\n"
+                            "The code you wrote has issues. "
+                            "Fix every problem listed below and rewrite the fully corrected code:\n\n"
                             f"{error_feedback}"
                         ),
                     })
                     continue  # outer retry loop
 
                 # ── No failures (or retries exhausted): emit static checks ──
-                code_check_report = build_code_check_report(final_response_text)
                 if code_check_report:
-                    await websocket.send(json.dumps({
-                        "type": "code_check_status",
-                        "status": "running",
-                        "message": "Running code checks on generated code...",
-                    }))
                     await websocket.send(json.dumps({
                         "type": "code_check_status",
                         "status": "done",
@@ -1967,8 +2054,10 @@ Current UTC date: {current_utc_date}
 
 
 Rules:
+- Always respond in English. Never reply in another language even if the user writes in one.
 - Keep responses plain and direct by default.
 - When you provide code, always use fenced code blocks with a language tag (for example ```python).
+- Write all code in English — every identifier (variable, function, class, parameter), comment, string literal, and printed output must be in English, without exception.
 - Prefer safe, production-ready coding practices and avoid patterns that can break at runtime.
 - After a tool call, wait for the result before doing anything else.
 - When web research is provided, rely on it, cross-reference claims, prioritize up-to-date evidence, and clearly call out uncertainty when sources conflict.
@@ -2204,35 +2293,39 @@ Tools (output ONLY the tool call as your entire response when using a tool):
                             else:
                                 print(f"{Colors.GREEN}  lint: no issues{Colors.RESET}")
 
+                    # ── Run static checks ──────────────────────────────────
+                    print(f"{Colors.CYAN}Running static code checks…{Colors.RESET}")
+                    code_check_report = build_code_check_report(final_response_text)
+                    static_issues = code_check_report.get("issue_list", []) if code_check_report else []
+
                     # ── Check for failures and decide whether to retry ──────
                     has_exec_fail = any(
                         not r.get("skipped") and r["exit_code"] != 0
                         for _, r in exec_results
                     )
                     has_lint_fail = bool(lint_results)
-                    has_failures = has_exec_fail or has_lint_fail
+                    has_static_fail = bool(static_issues)
+                    has_failures = has_exec_fail or has_lint_fail or has_static_fail
 
                     if has_failures and code_attempt < MAX_CODE_RETRY_ATTEMPTS:
-                        error_feedback = _build_code_error_feedback(exec_results, lint_results)
+                        error_feedback = _build_code_error_feedback(exec_results, lint_results, static_issues)
                         print(
-                            f"{Colors.YELLOW}Self-correcting code "
+                            f"{Colors.YELLOW}Issues detected — self-correcting code "
                             f"(attempt {code_attempt + 1}/{MAX_CODE_RETRY_ATTEMPTS})…{Colors.RESET}"
                         )
                         history.append({"role": "model", "content": final_response_text})
                         history.append({
                             "role": "user",
                             "content": (
-                                "The code you wrote produced errors. "
-                                "Fix them and rewrite the corrected code:\n\n"
+                                "The code you wrote has issues. "
+                                "Fix every problem listed below and rewrite the fully corrected code:\n\n"
                                 f"{error_feedback}"
                             ),
                         })
                         continue  # retry
 
                     # ── Static checks + final output ────────────────────────
-                    code_check_report = build_code_check_report(final_response_text)
                     if code_check_report:
-                        print(f"{Colors.CYAN}Running code checks on generated code...{Colors.RESET}")
                         print(f"{Colors.CYAN}{code_check_report['summary']}{Colors.RESET}")
                         final_response_text = (
                             f"{final_response_text}\n\n{format_code_check_report(code_check_report)}"
