@@ -294,7 +294,7 @@ def parse_internet_mode_command(text):
         return "toggle"
     return None
 
-def is_code_related_query(text):
+def analyze_code_query(text):
     asks_for_cdn = bool(CDN_HINT_PATTERN.search(text or ""))
     has_web_dev_context = bool(WEB_DEV_CONTEXT_PATTERN.search(text or ""))
     has_code_keywords = bool(CODE_RELATED_KEYWORDS_PATTERN.search(text or ""))
@@ -593,7 +593,7 @@ def build_search_queries(user_text):
     explicit_years = [y for y in _extract_years(text) if y <= current_year + 1]
     has_current_hint = bool(CURRENT_INFO_HINT_PATTERN.search(text))
 
-    is_code_related, asks_for_cdn = is_code_related_query(text)
+    is_code_related, asks_for_cdn = analyze_code_query(text)
     queries = []
 
     if explicit_years:

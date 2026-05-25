@@ -208,6 +208,10 @@
   .internet-mode-btn.off {
     color: var(--text-muted);
   }
+  .internet-mode-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
 
   .btn-icon {
     width: 34px;
@@ -831,6 +835,7 @@ function connectWS() {
     ws = new WebSocket('ws://localhost:7070');
     ws.onopen = () => {
       wsConnected = true;
+      updateInternetModeToggleAvailability();
       setStatus('ready');
     };
     ws.onmessage = (e) => {
@@ -839,6 +844,7 @@ function connectWS() {
     };
     ws.onclose = () => {
       wsConnected = false;
+      updateInternetModeToggleAvailability();
       setStatus('offline');
       setInternetStatus(false);
       // Retry after 3s
@@ -846,9 +852,12 @@ function connectWS() {
     };
     ws.onerror = () => {
       wsConnected = false;
+      updateInternetModeToggleAvailability();
       setInternetStatus(false);
     };
   } catch(err) {
+    wsConnected = false;
+    updateInternetModeToggleAvailability();
     setStatus('offline');
     setInternetStatus(false);
   }
@@ -929,6 +938,13 @@ function setInternetMode(enabled) {
   internetModeEnabled = Boolean(enabled);
   internetModeToggle.className = 'internet-mode-btn ' + (internetModeEnabled ? 'on' : 'off');
   internetModeToggle.textContent = internetModeEnabled ? 'Web On' : 'Web Off';
+}
+
+function updateInternetModeToggleAvailability() {
+  internetModeToggle.disabled = !wsConnected;
+  internetModeToggle.title = wsConnected
+    ? 'Toggle internet usage'
+    : 'Backend offline: internet mode cannot be changed';
 }
 
 function appendSearchProgress(message, query) {
@@ -1218,6 +1234,7 @@ document.getElementById('clearBtn').addEventListener('click', () => {
 // ─────────────────────────────────────────────
 // Boot
 // ─────────────────────────────────────────────
+updateInternetModeToggleAvailability();
 connectWS();
 input.focus();
 </script>
