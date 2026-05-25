@@ -1265,17 +1265,20 @@ NON_ASCII_CODE_RE = re.compile(r"[^\x00-\x7F]")
 # - Keeps obvious fake values like "test1234" from flooding warnings too much.
 # - Still catches most real hardcoded secrets/tokens, which are typically longer.
 MIN_CREDENTIAL_LITERAL_LEN = 8
+_CRED_LITERAL_DQ = rf'"(?:\\.|[^"\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}"'
+_CRED_LITERAL_SQ = rf"'(?:\\.|[^'\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}'"
+_CRED_LITERAL_PATTERN = rf"(?:{_CRED_LITERAL_DQ}|{_CRED_LITERAL_SQ})"
 HARDCODED_CRED_RE = re.compile(
     rf'''
     (?ix)
     # direct assignment: password = "..."
-    (?:\b(?:password|passwd|secret|api[_\-]?key|token|auth)\b\s*=\s*(?:"(?:\\.|[^"\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}"|'(?:\\.|[^'\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}'))
+    (?:\b(?:password|passwd|secret|api[_\-]?key|token|auth)\b\s*=\s*{_CRED_LITERAL_PATTERN})
     |
     # dict/object literal: "api_key": "..."
-    (?:["'](?:password|passwd|secret|api[_\-]?key|token|auth)["']\s*:\s*(?:"(?:\\.|[^"\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}"|'(?:\\.|[^'\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}'))
+    (?:["'](?:password|passwd|secret|api[_\-]?key|token|auth)["']\s*:\s*{_CRED_LITERAL_PATTERN})
     |
     # environment fallback default: os.getenv("KEY", "hardcoded_default")
-    (?:\b(?:os\.)?getenv\s*\(\s*["'][A-Za-z0-9_\-]+["']\s*,\s*(?:"(?:\\.|[^"\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}"|'(?:\\.|[^'\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}')\s*\))
+    (?:\b(?:os\.)?getenv\s*\(\s*["'][A-Za-z0-9_\-]+["']\s*,\s*{_CRED_LITERAL_PATTERN}\s*\))
     ''',
 )
 BARE_EXCEPT_RE = re.compile(r"^\s*except\s*:", re.MULTILINE)
@@ -1455,6 +1458,8 @@ def _has_balanced_delimiters(code):
     return not stack and in_string is None
 
 def _format_short_list(items, max_items=3):
+    if not items:
+        return ""
     shown = items[:max_items]
     suffix = ", ..." if len(items) > max_items else ""
     return ", ".join(shown) + suffix
@@ -1621,6 +1626,7 @@ def build_code_check_report(text):
     return {
         "summary": summary,
         "details": details[:MAX_REPORTED_CODE_CHECK_DETAILS],
+        # issues is the numeric count, while all_issues is the full issue text list.
         "issues": issue_count,
         "all_issues": all_issues,
     }
@@ -1632,7 +1638,7 @@ def format_code_check_report(report):
     lines.extend(report.get("details", []))
     return "\n".join(line for line in lines if line).strip()
 
-def _build_code_error_feedback(exec_results, lint_results, static_issues=None):
+def _build_validation_feedback(exec_results, lint_results, static_issues=None):
     """Format execution, lint, and static-check failures into a re-prompt error message."""
     parts = []
     for lang, result in exec_results:
@@ -1965,7 +1971,7 @@ async def _ws_handler(websocket):
                 has_failures = has_exec_fail or has_lint_fail or has_static_fail
 
                 if has_failures and code_attempt < MAX_CODE_RETRY_ATTEMPTS:
-                    error_feedback = _build_code_error_feedback(exec_results, lint_results, static_issues)
+                    error_feedback = _build_validation_feedback(exec_results, lint_results, static_issues)
                     await websocket.send(json.dumps({
                         "type": "code_check_status",
                         "status": "running",
@@ -2314,7 +2320,7 @@ Tools (output ONLY the tool call as your entire response when using a tool):
                     has_failures = has_exec_fail or has_lint_fail or has_static_fail
 
                     if has_failures and code_attempt < MAX_CODE_RETRY_ATTEMPTS:
-                        error_feedback = _build_code_error_feedback(exec_results, lint_results, static_issues)
+                        error_feedback = _build_validation_feedback(exec_results, lint_results, static_issues)
                         print(
                             f"{Colors.YELLOW}Issues detected - self-correcting code "
                             f"(attempt {code_attempt + 1}/{MAX_CODE_RETRY_ATTEMPTS})…{Colors.RESET}"
