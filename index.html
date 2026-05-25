@@ -1375,7 +1375,7 @@ function formatText(str) {
 
     for (const line of lines) {
       if (!fenceChar) {
-        const openMatch = line.match(/^(`{3,}|~{3,})([^\n]*)$/);
+        const openMatch = line.match(/^\s{0,3}(`{3,}|~{3,})(.*)$/);
         if (openMatch) {
           pushText();
           fenceChar = openMatch[1][0];
@@ -1387,8 +1387,8 @@ function formatText(str) {
         continue;
       }
 
-      const closePattern = new RegExp(`^${fenceChar}{${fenceLen},}\\s*$`);
-      if (closePattern.test(line.trim())) {
+      const closePattern = new RegExp(`^\\s{0,3}${fenceChar}{${fenceLen},}\\s*$`);
+      if (closePattern.test(line)) {
         pushCode();
         fenceChar = '';
         fenceLen = 0;
