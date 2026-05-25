@@ -1261,7 +1261,9 @@ CODE_PLACEHOLDER_RE = re.compile(
     re.IGNORECASE,
 )
 NON_ASCII_CODE_RE = re.compile(r"[^\x00-\x7F]")
-# Heuristic threshold: values shorter than this are often placeholders/noise.
+# Heuristic threshold:
+# - Keeps obvious fake values like "test1234" from flooding warnings too much.
+# - Still catches most real hardcoded secrets/tokens, which are typically longer.
 MIN_CREDENTIAL_LITERAL_LEN = 8
 HARDCODED_CRED_RE = re.compile(
     rf'''
@@ -1454,7 +1456,7 @@ def _has_balanced_delimiters(code):
 
 def _format_short_list(items, max_items=3):
     shown = items[:max_items]
-    suffix = "..." if len(items) > max_items else ""
+    suffix = ", ..." if len(items) > max_items else ""
     return ", ".join(shown) + suffix
 
 def _is_meaningful_statement(node):
@@ -1496,13 +1498,13 @@ def _run_code_checks_for_block(language, code):
     # Check 3: No placeholder text
     record_check(
         not CODE_PLACEHOLDER_RE.search(code or ""),
-        "Found placeholder text (e.g. TODO/FIXME/placeholder) — write complete, runnable code.",
+        "Found placeholder text (e.g. TODO/FIXME/placeholder) - write complete, runnable code.",
     )
 
     # Check 4: No non-ASCII characters (catches Cyrillic/CJK identifiers and comments)
     record_check(
         not has_non_ascii,
-        "Non-ASCII characters found in code — all identifiers, comments, and text must be in English.",
+        "Non-ASCII characters found in code - all identifiers, comments, and text must be in English.",
     )
 
     # Check 5: No hardcoded credentials
@@ -1540,7 +1542,7 @@ def _run_code_checks_for_block(language, code):
         # Check 8: No bare except clauses
         record_check(
             not BARE_EXCEPT_RE.search(code or ""),
-            "Bare 'except:' clause found — catch a specific exception type instead.",
+            "Bare 'except:' clause found - catch a specific exception type instead.",
         )
 
         # Check 9: No empty function or class bodies (all-pass or docstring-only bodies)
@@ -1558,7 +1560,7 @@ def _run_code_checks_for_block(language, code):
                 not empty_definitions,
                 (
                     f"The following definitions have empty bodies: "
-                    f"{_format_short_list(empty_definitions)} — each must have a real implementation."
+                    f"{_format_short_list(empty_definitions)} - each must have a real implementation."
                 ),
             )
 
@@ -1898,13 +1900,13 @@ async def _ws_handler(websocket):
                             await websocket.send(json.dumps({
                                 "type": "code_check_status",
                                 "status": "done",
-                                "message": f"{lang}: execution skipped — {exec_r['stderr']}",
+                                "message": f"{lang}: execution skipped - {exec_r['stderr']}",
                                 "details": [],
                                 "issues": 0,
                             }))
                         else:
                             status_msg = (
-                                f"{lang}: exit {exec_r['exit_code']} — "
+                                f"{lang}: exit {exec_r['exit_code']} - "
                                 + ("ok" if exec_r["exit_code"] == 0 else "failed")
                             )
                             details = []
@@ -1970,7 +1972,7 @@ async def _ws_handler(websocket):
                         "type": "code_check_status",
                         "status": "running",
                         "message": (
-                            f"Issues detected — self-correcting code "
+                            f"Issues detected - self-correcting code "
                             f"(attempt {code_attempt + 1}/{MAX_CODE_RETRY_ATTEMPTS})…"
                         ),
                     }))
@@ -2063,7 +2065,7 @@ Rules:
 - Always respond in English. Never reply in another language even if the user writes in one.
 - Keep responses plain and direct by default.
 - When you provide code, always use fenced code blocks with a language tag (for example ```python).
-- Write all code in English — every identifier (variable, function, class, parameter), comment, string literal, and printed output must be in English, without exception.
+- Write all code in English - every identifier (variable, function, class, parameter), comment, string literal, and printed output must be in English, without exception.
 - Prefer safe, production-ready coding practices and avoid patterns that can break at runtime.
 - After a tool call, wait for the result before doing anything else.
 - When web research is provided, rely on it, cross-reference claims, prioritize up-to-date evidence, and clearly call out uncertainty when sources conflict.
@@ -2074,15 +2076,15 @@ Rules:
 - No bullet points or markdown
 - Mirror the tone and style of the person you're talking to. If they're casual, be casual. If they're brief, be brief. Match their energy.
 - Any Python or JavaScript code you write is automatically executed. If it produces errors, you will receive the output and must fix it.
-- Write complete, runnable code — no stubs, no placeholders, no TODO comments.
+- Write complete, runnable code - no stubs, no placeholders, no TODO comments.
 
 Tools (output ONLY the tool call as your entire response when using a tool):
-- <list_files /> — list all project files
-- <read_file path="filename" /> — read a file
-- <write_file path="filename">content</write_file> — write/create a file
-- <edit_file path="filename"><search>old text</search><replace>new text</replace></edit_file> — edit a file
-- <run_command cmd="command" /> — run a terminal command
-- <grep_files pattern="regex" glob="*.py" /> — search project files for a pattern and get matching snippets (glob is optional)
+- <list_files /> - list all project files
+- <read_file path="filename" /> - read a file
+- <write_file path="filename">content</write_file> - write/create a file
+- <edit_file path="filename"><search>old text</search><replace>new text</replace></edit_file> - edit a file
+- <run_command cmd="command" /> - run a terminal command
+- <grep_files pattern="regex" glob="*.py" /> - search project files for a pattern and get matching snippets (glob is optional)
 """
 
     history = [
@@ -2105,7 +2107,7 @@ Tools (output ONLY the tool call as your entire response when using a tool):
         ws_thread.start()
         print(f"{Colors.GREEN}GUI server started on ws://localhost:7070{Colors.RESET}")
     else:
-        print(f"{Colors.YELLOW}websockets not installed — GUI will not connect. Run: pip install websockets{Colors.RESET}")
+        print(f"{Colors.YELLOW}websockets not installed - GUI will not connect. Run: pip install websockets{Colors.RESET}")
 
     if startup_issue:
         print(f"{Colors.YELLOW}{startup_issue}{Colors.RESET}")
@@ -2316,7 +2318,7 @@ Tools (output ONLY the tool call as your entire response when using a tool):
                     if has_failures and code_attempt < MAX_CODE_RETRY_ATTEMPTS:
                         error_feedback = _build_code_error_feedback(exec_results, lint_results, static_issues)
                         print(
-                            f"{Colors.YELLOW}Issues detected — self-correcting code "
+                            f"{Colors.YELLOW}Issues detected - self-correcting code "
                             f"(attempt {code_attempt + 1}/{MAX_CODE_RETRY_ATTEMPTS})…{Colors.RESET}"
                         )
                         history.append({"role": "model", "content": final_response_text})
