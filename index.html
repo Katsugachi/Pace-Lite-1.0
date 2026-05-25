@@ -863,6 +863,10 @@ const internetStatus = document.getElementById('internetStatus');
 const internetModeToggle = document.getElementById('internetModeToggle');
 const searchProgress = document.getElementById('searchProgress');
 const searchProgressLog = document.getElementById('searchProgressLog');
+const MAX_BLOCKQUOTE_DEPTH = 5;
+const MAX_FENCE_INDENT = 3;
+const OPEN_FENCE_PATTERN = new RegExp(`^\\s{0,${MAX_FENCE_INDENT}}(\`{3,}|~{3,})(.*)$`);
+const CLOSE_FENCE_PATTERN_CACHE = new Map();
 let messages = []; // {role, content}
 let isThinking = false;
 let sessionStarted = false;
@@ -1204,9 +1208,6 @@ function escapeHTML(str) {
 function formatText(str) {
   const text = String(str ?? '');
   const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  const MAX_BLOCKQUOTE_DEPTH = 5;
-  const MAX_FENCE_INDENT = 3;
-  const OPEN_FENCE_PATTERN = new RegExp(`^\\s{0,${MAX_FENCE_INDENT}}(\`{3,}|~{3,})(.*)$`);
   let html = '';
 
   function safeHref(href) {
@@ -1376,14 +1377,12 @@ function formatText(str) {
     let fenceLen = 0;
     let codeLang = '';
     let closeFencePattern = null;
-    const closeFencePatternCache = new Map();
-
     function getCloseFencePattern(char, len) {
       const key = `${char}:${len}`;
-      if (closeFencePatternCache.has(key)) return closeFencePatternCache.get(key);
+      if (CLOSE_FENCE_PATTERN_CACHE.has(key)) return CLOSE_FENCE_PATTERN_CACHE.get(key);
       const safeFenceChar = char === '`' ? '\\`' : '~';
       const pattern = new RegExp(`^\\s{0,${MAX_FENCE_INDENT}}${safeFenceChar}{${len},}\\s*$`);
-      closeFencePatternCache.set(key, pattern);
+      CLOSE_FENCE_PATTERN_CACHE.set(key, pattern);
       return pattern;
     }
 
