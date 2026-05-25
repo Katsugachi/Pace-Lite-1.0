@@ -568,6 +568,47 @@
     padding: 1px 5px;
   }
 
+  .md-content p { margin: 0 0 10px; }
+  .md-content p:last-child { margin-bottom: 0; }
+  .md-content h1,
+  .md-content h2,
+  .md-content h3,
+  .md-content h4,
+  .md-content h5,
+  .md-content h6 {
+    margin: 12px 0 8px;
+    line-height: 1.35;
+    font-weight: 700;
+  }
+  .md-content h1 { font-size: 1.15em; }
+  .md-content h2 { font-size: 1.08em; }
+  .md-content h3,
+  .md-content h4,
+  .md-content h5,
+  .md-content h6 { font-size: 1em; }
+  .md-content ul,
+  .md-content ol {
+    margin: 0 0 10px 18px;
+    padding: 0;
+  }
+  .md-content li { margin: 3px 0; }
+  .md-content blockquote {
+    margin: 0 0 10px;
+    padding: 0 0 0 10px;
+    border-left: 2px solid var(--border);
+    color: var(--text-secondary);
+  }
+  .md-content hr {
+    border: 0;
+    border-top: 1px solid var(--border);
+    margin: 10px 0;
+  }
+  .md-content a {
+    color: inherit;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
   /* ── Input bar ── */
   .input-area {
     padding: 12px 20px 20px;
@@ -822,6 +863,10 @@ const internetStatus = document.getElementById('internetStatus');
 const internetModeToggle = document.getElementById('internetModeToggle');
 const searchProgress = document.getElementById('searchProgress');
 const searchProgressLog = document.getElementById('searchProgressLog');
+const MAX_BLOCKQUOTE_DEPTH = 5;
+const MAX_FENCE_INDENT = 3;
+const OPEN_FENCE_PATTERN = new RegExp(`^\\s{0,${MAX_FENCE_INDENT}}(\`{3,}|~{3,})(.*)$`);
+const CLOSE_FENCE_PATTERN_CACHE = new Map();
 let messages = []; // {role, content}
 let isThinking = false;
 let sessionStarted = false;
@@ -1093,7 +1138,7 @@ function appendPaceMessage(text, toolName, toolResult) {
   }
 
   if (text) {
-    inner += `<div style="margin-top:${toolName ? '10px' : '0'}">${formatText(text)}</div>`;
+    inner += `<div class="md-content" style="margin-top:${toolName ? '10px' : '0'}">${formatText(text)}</div>`;
   }
 
   const rawText = [toolResult, text].filter(Boolean).join('\n\n');
@@ -1161,20 +1206,147 @@ function escapeHTML(str) {
 }
 
 function formatText(str) {
-  let html = '';
   const text = String(str ?? '');
-  const fencedRegex = /```([^\n`]*)\r?\n([\s\S]*?)```/g;
-  let lastIndex = 0;
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  let html = '';
 
-  function formatInlineText(raw) {
-    const parts = String(raw ?? '').split(/(`[^`]+`)/g);
-    return parts.map((part) => {
-      const match = part.match(/^`([^`]+)`$/);
-      if (match) {
-        return `<code class="inline-code">${escapeHTML(match[1])}</code>`;
+  function safeHref(href) {
+    const value = String(href ?? '').trim();
+    if (/^(https?:\/\/|mailto:)/i.test(value)) return value;
+    return null;
+  }
+
+  function applyInlineMarkdown(raw) {
+    const source = String(raw ?? '');
+    const codeTokens = [];
+    const linkTokens = [];
+    const withCodeTokens = source.replace(/`([^`]+)`/g, (_, code) => {
+      const token = `@@CODE_${codeTokens.length}@@`;
+      codeTokens.push(`<code class="inline-code">${escapeHTML(code)}</code>`);
+      return token;
+    });
+    const withLinkTokens = withCodeTokens.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, href) => {
+      const url = safeHref(href);
+      if (!url) return m;
+      const token = `@@LINK_${linkTokens.length}@@`;
+      linkTokens.push(
+        `<a href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(label)}</a>`
+      );
+      return token;
+    });
+
+    let escaped = escapeHTML(withLinkTokens);
+    escaped = escaped
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+      .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+      .replace(/_([^_]+)_/g, '<em>$1</em>')
+      .replace(/~~([^~]+)~~/g, '<del>$1</del>');
+
+    return escaped
+      .replace(/@@CODE_(\d+)@@/g, (_, idx) => codeTokens[Number(idx)] || '')
+      .replace(/@@LINK_(\d+)@@/g, (_, idx) => linkTokens[Number(idx)] || '');
+  }
+
+  function renderTextMarkdown(raw, depth = 0) {
+    const chunk = String(raw ?? '');
+    if (!chunk.trim()) return '';
+    const lines = chunk.split('\n');
+    const out = [];
+    let para = [];
+    let listType = null;
+    let listBuffer = [];
+    let quoteBuffer = [];
+
+    function flushParagraph() {
+      if (!para.length) return;
+      out.push(`<p>${applyInlineMarkdown(para.join(' ').trim())}</p>`);
+      para = [];
+    }
+
+    function flushList() {
+      if (!listType || !listBuffer.length) return;
+      out.push(`<${listType}>${listBuffer.join('')}</${listType}>`);
+      listType = null;
+      listBuffer = [];
+    }
+
+    function flushQuote() {
+      if (!quoteBuffer.length) return;
+      if (depth >= MAX_BLOCKQUOTE_DEPTH) {
+        out.push(`<blockquote>${applyInlineMarkdown(quoteBuffer.join('\n'))}</blockquote>`);
+      } else {
+        out.push(`<blockquote>${renderTextMarkdown(quoteBuffer.join('\n'), depth + 1)}</blockquote>`);
       }
-      return escapeHTML(part);
-    }).join('').replace(/\n/g, '<br>');
+      quoteBuffer = [];
+    }
+
+    for (const lineRaw of lines) {
+      const line = lineRaw.trimEnd();
+      const trimmed = line.trim();
+
+      if (!trimmed) {
+        flushParagraph();
+        flushList();
+        flushQuote();
+        continue;
+      }
+
+      const quote = line.match(/^\s*>\s?(.*)$/);
+      if (quote) {
+        flushParagraph();
+        flushList();
+        quoteBuffer.push(quote[1]);
+        continue;
+      }
+      flushQuote();
+
+      if (/^\s*([-*_])\s*\1\s*\1+\s*$/.test(trimmed)) {
+        flushParagraph();
+        flushList();
+        out.push('<hr>');
+        continue;
+      }
+
+      const heading = line.match(/^\s*(#{1,6})\s+(.+?)\s*$/);
+      if (heading) {
+        flushParagraph();
+        flushList();
+        const level = heading[1].length;
+        out.push(`<h${level}>${applyInlineMarkdown(heading[2])}</h${level}>`);
+        continue;
+      }
+
+      const ulItem = line.match(/^\s*[-*+]\s+(.+)$/);
+      if (ulItem) {
+        flushParagraph();
+        if (listType !== 'ul') {
+          flushList();
+          listType = 'ul';
+        }
+        listBuffer.push(`<li>${applyInlineMarkdown(ulItem[1])}</li>`);
+        continue;
+      }
+
+      const olItem = line.match(/^\s*\d+\.\s+(.+)$/);
+      if (olItem) {
+        flushParagraph();
+        if (listType !== 'ol') {
+          flushList();
+          listType = 'ol';
+        }
+        listBuffer.push(`<li>${applyInlineMarkdown(olItem[1])}</li>`);
+        continue;
+      }
+
+      flushList();
+      para.push(trimmed);
+    }
+
+    flushParagraph();
+    flushList();
+    flushQuote();
+    return out.join('');
   }
 
   function renderCodeBlock(langRaw, codeRaw) {
@@ -1196,22 +1368,81 @@ function formatText(str) {
       </div>`;
   }
 
-  let match;
-  while ((match = fencedRegex.exec(text)) !== null) {
-    html += formatInlineText(text.slice(lastIndex, match.index));
-    html += renderCodeBlock(match[1], match[2]);
-    lastIndex = fencedRegex.lastIndex;
+  function parseSegments(input) {
+    const segments = [];
+    const lines = String(input ?? '').split('\n');
+    let textBuffer = [];
+    let codeBuffer = [];
+    let fenceChar = '';
+    let fenceLen = 0;
+    let codeLang = '';
+    let closeFencePattern = null;
+    function getCloseFencePattern(char, len) {
+      const key = `${char}:${len}`;
+      if (CLOSE_FENCE_PATTERN_CACHE.has(key)) return CLOSE_FENCE_PATTERN_CACHE.get(key);
+      const safeFenceChar = char === '`' ? '\\`' : '~';
+      const pattern = new RegExp(`^\\s{0,${MAX_FENCE_INDENT}}${safeFenceChar}{${len},}\\s*$`);
+      CLOSE_FENCE_PATTERN_CACHE.set(key, pattern);
+      return pattern;
+    }
+
+    function pushText() {
+      if (!textBuffer.length) return;
+      segments.push({ type: 'text', value: textBuffer.join('\n') });
+      textBuffer = [];
+    }
+
+    function pushCode() {
+      segments.push({ type: 'code', lang: codeLang, value: codeBuffer.join('\n') });
+      codeBuffer = [];
+    }
+
+    for (const line of lines) {
+      if (!fenceChar) {
+        const openMatch = line.match(OPEN_FENCE_PATTERN);
+        if (openMatch) {
+          const detectedFenceChar = openMatch[1][0];
+          if (detectedFenceChar !== '`' && detectedFenceChar !== '~') {
+            textBuffer.push(line);
+            continue;
+          }
+          pushText();
+          fenceChar = detectedFenceChar;
+          fenceLen = openMatch[1].length;
+          codeLang = (openMatch[2] || '').trim();
+          closeFencePattern = getCloseFencePattern(fenceChar, fenceLen);
+          continue;
+        }
+        textBuffer.push(line);
+        continue;
+      }
+
+      if (closeFencePattern && closeFencePattern.test(line)) {
+        pushCode();
+        fenceChar = '';
+        fenceLen = 0;
+        codeLang = '';
+        closeFencePattern = null;
+        continue;
+      }
+
+      codeBuffer.push(line);
+    }
+
+    if (fenceChar) {
+      pushCode();
+    } else {
+      pushText();
+    }
+
+    return segments;
   }
 
-  if (lastIndex < text.length) {
-    const tail = text.slice(lastIndex);
-    const unterminated = tail.match(/```([^\n`]*)\r?\n([\s\S]*)$/);
-    if (unterminated) {
-      const prefix = tail.slice(0, unterminated.index);
-      html += formatInlineText(prefix);
-      html += renderCodeBlock(unterminated[1], unterminated[2]);
+  for (const segment of parseSegments(normalized)) {
+    if (segment.type === 'code') {
+      html += renderCodeBlock(segment.lang, segment.value);
     } else {
-      html += formatInlineText(tail);
+      html += renderTextMarkdown(segment.value);
     }
   }
 
