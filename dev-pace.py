@@ -279,6 +279,27 @@ def build_internet_status_payload(force=False):
         "active": enabled and available,
     }
 
+def _normalize_terminal_command(text):
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+def parse_internet_mode_command(text):
+    normalized = _normalize_terminal_command(text)
+    if normalized in {"/internet", "internet", "/internet status", "internet status"}:
+        return "status"
+    if normalized in {"/internet on", "internet on"}:
+        return "on"
+    if normalized in {"/internet off", "internet off"}:
+        return "off"
+    if normalized in {"/internet toggle", "internet toggle"}:
+        return "toggle"
+    return None
+
+def is_code_related_query(text):
+    asks_for_cdn = bool(CDN_HINT_PATTERN.search(text or ""))
+    has_web_dev_context = bool(WEB_DEV_CONTEXT_PATTERN.search(text or ""))
+    has_code_keywords = bool(CODE_RELATED_KEYWORDS_PATTERN.search(text or ""))
+    return has_code_keywords or (asks_for_cdn and has_web_dev_context), asks_for_cdn
+
 def _flatten_related_topics(items):
     out = []
     for item in items or []:
@@ -572,9 +593,7 @@ def build_search_queries(user_text):
     explicit_years = [y for y in _extract_years(text) if y <= current_year + 1]
     has_current_hint = bool(CURRENT_INFO_HINT_PATTERN.search(text))
 
-    asks_for_cdn = bool(CDN_HINT_PATTERN.search(text))
-    has_web_dev_context = bool(WEB_DEV_CONTEXT_PATTERN.search(text))
-    is_code_related = bool(CODE_RELATED_KEYWORDS_PATTERN.search(text)) or (asks_for_cdn and has_web_dev_context)
+    is_code_related, asks_for_cdn = is_code_related_query(text)
     queries = []
 
     if explicit_years:
@@ -1378,25 +1397,25 @@ Rules:
                 print(f"{Colors.GREEN}Goodbye! See you later!{Colors.RESET}")
                 break
 
-            normalized_input = re.sub(r"\s+", " ", user_input.lower()).strip()
-            if normalized_input in {"/internet", "internet", "/internet status", "internet status"}:
+            internet_mode_command = parse_internet_mode_command(user_input)
+            if internet_mode_command == "status":
                 internet_enabled = get_internet_mode()
                 internet_available = get_internet_status(force=True)
                 mode_text = "enabled" if internet_enabled else "disabled"
                 access_text = "available" if internet_available else "unavailable"
                 print(f"{Colors.CYAN}Internet mode is {mode_text}; internet access is currently {access_text}.{Colors.RESET}")
                 continue
-            if normalized_input in {"/internet on", "internet on"}:
+            if internet_mode_command == "on":
                 set_internet_mode(True)
                 internet_available = get_internet_status(force=True)
                 access_text = "available" if internet_available else "unavailable"
                 print(f"{Colors.GREEN}Internet mode enabled. Internet access is currently {access_text}.{Colors.RESET}")
                 continue
-            if normalized_input in {"/internet off", "internet off"}:
+            if internet_mode_command == "off":
                 set_internet_mode(False)
                 print(f"{Colors.YELLOW}Internet mode disabled. Pace will use local model knowledge only.{Colors.RESET}")
                 continue
-            if normalized_input in {"/internet toggle", "internet toggle"}:
+            if internet_mode_command == "toggle":
                 new_mode = not get_internet_mode()
                 set_internet_mode(new_mode)
                 if new_mode:
