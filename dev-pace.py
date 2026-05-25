@@ -1253,13 +1253,35 @@ GREP_FILES_TOOL_RE = re.compile(
     re.DOTALL,
 )
 MAX_WRAPPER_STRIP_PASSES = 8
-MAX_REPORTED_ISSUES_PER_BLOCK = 2
-MAX_REPORTED_CODE_CHECK_DETAILS = 8
+MAX_REPORTED_ISSUES_PER_BLOCK = 5
+MAX_REPORTED_CODE_CHECK_DETAILS = 15
 CODE_BLOCK_RE = re.compile(r"```([^\n`]*)\r?\n([\s\S]*?)```")
 CODE_PLACEHOLDER_RE = re.compile(
     r"\b(todo|fixme|insert[_\s-]*here|your[_\s-]*api[_\s-]*key|placeholder)\b",
     re.IGNORECASE,
 )
+NON_ASCII_CODE_RE = re.compile(r"[^\x00-\x7F]")
+# Heuristic threshold:
+# - Keeps obvious fake values like "test1234" from flooding warnings too much.
+# - Still catches most real hardcoded secrets/tokens, which are typically longer.
+MIN_CREDENTIAL_LITERAL_LEN = 8
+_CRED_LITERAL_DQ = rf'"(?:\\.|[^"\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}"'
+_CRED_LITERAL_SQ = rf"'(?:\\.|[^'\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}'"
+_CRED_LITERAL_PATTERN = rf"(?:{_CRED_LITERAL_DQ}|{_CRED_LITERAL_SQ})"
+HARDCODED_CRED_RE = re.compile(
+    rf'''
+    (?ix)
+    # direct assignment: password = "..."
+    (?:\b(?:password|passwd|secret|api[_\-]?key|token|auth)\b\s*=\s*{_CRED_LITERAL_PATTERN})
+    |
+    # dict/object literal: "api_key": "..."
+    (?:["'](?:password|passwd|secret|api[_\-]?key|token|auth)["']\s*:\s*{_CRED_LITERAL_PATTERN})
+    |
+    # environment fallback default: os.getenv("KEY", "hardcoded_default")
+    (?:\b(?:os\.)?getenv\s*\(\s*["'][A-Za-z0-9_\-]+["']\s*,\s*{_CRED_LITERAL_PATTERN}\s*\))
+    ''',
+)
+BARE_EXCEPT_RE = re.compile(r"^\s*except\s*:", re.MULTILINE)
 TOOL_INTENT_PATTERNS = [
     re.compile(r"\b(list|show)\b.*\b(files?|folders?|directories?)\b"),
     re.compile(r"\b(read|open|show)\b.*\bfile\b"),
@@ -1435,6 +1457,24 @@ def _has_balanced_delimiters(code):
 
     return not stack and in_string is None
 
+def _format_short_list(items, max_items=3):
+    if not items:
+        return ""
+    shown = items[:max_items]
+    suffix = ", ..." if len(items) > max_items else ""
+    return ", ".join(shown) + suffix
+
+def _is_meaningful_statement(node):
+    if isinstance(node, ast.Pass):
+        return False
+    if (
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    ):
+        return False
+    return True
+
 def _run_code_checks_for_block(language, code):
     checks_run = 0
     checks_passed = 0
@@ -1449,25 +1489,47 @@ def _run_code_checks_for_block(language, code):
             issues.append(issue_text)
 
     stripped = (code or "").strip()
+    has_non_ascii = bool(NON_ASCII_CODE_RE.search(code or ""))
+
+    # Check 1: Non-empty
     record_check(bool(stripped), "Code block is empty.")
+
+    # Check 2: Balanced delimiters
     record_check(
         _has_balanced_delimiters(code),
         "Potentially unbalanced delimiters detected ((), [], or {}).",
     )
+
+    # Check 3: No placeholder text
     record_check(
         not CODE_PLACEHOLDER_RE.search(code or ""),
-        "Found placeholder text (for example TODO/FIXME/placeholder).",
+        "Found placeholder text (e.g. TODO/FIXME/placeholder) - write complete, runnable code.",
+    )
+
+    # Check 4: No non-ASCII characters (catches Cyrillic/CJK identifiers and comments)
+    record_check(
+        not has_non_ascii,
+        "Non-ASCII characters found in code - all identifiers, comments, and text must be in English.",
+    )
+
+    # Check 5: No hardcoded credentials
+    record_check(
+        not HARDCODED_CRED_RE.search(code or ""),
+        "Possible hardcoded credential detected (password/secret/api_key/token literal assignment).",
     )
 
     if language == "python":
+        # Check 6: Syntax validity
+        tree = None
         try:
-            ast.parse(code or "")
+            tree = ast.parse(code or "")
             record_check(True)
         except SyntaxError as err:
             line = getattr(err, "lineno", "?")
             msg = getattr(err, "msg", "invalid syntax")
             record_check(False, f"Python syntax error at line {line}: {msg}.")
 
+        # Check 7: No unsafe patterns
         risky_patterns = []
         if re.search(r"\beval\s*\(", code or ""):
             risky_patterns.append("eval()")
@@ -1481,6 +1543,32 @@ def _run_code_checks_for_block(language, code):
             not risky_patterns,
             f"Potentially unsafe Python usage: {', '.join(risky_patterns)}.",
         )
+
+        # Check 8: No bare except clauses
+        record_check(
+            not BARE_EXCEPT_RE.search(code or ""),
+            "Bare 'except:' clause found - catch a specific exception type instead.",
+        )
+
+        # Check 9: No empty function or class bodies (all-pass or docstring-only bodies)
+        if tree is not None:
+            empty_definitions = []
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    real_stmts = [
+                        s for s in node.body
+                        if _is_meaningful_statement(s)
+                    ]
+                    if not real_stmts:
+                        empty_definitions.append(getattr(node, "name", "?"))
+            record_check(
+                not empty_definitions,
+                (
+                    f"The following definitions have empty bodies: "
+                    f"{_format_short_list(empty_definitions)} - each must have a real implementation."
+                ),
+            )
+
     elif language == "json":
         try:
             json.loads(code or "")
@@ -1509,12 +1597,14 @@ def build_code_check_report(text):
     total_passed = 0
     details = []
     issue_count = 0
+    all_issues = []
 
     for index, block in enumerate(blocks, start=1):
         result = _run_code_checks_for_block(block["language"], block["code"])
         total_checks += result["checks_run"]
         total_passed += result["checks_passed"]
         issue_count += len(result["issues"])
+        all_issues.extend(result["issues"])
 
         status = "ok" if not result["issues"] else f"{len(result['issues'])} issue(s)"
         details.append(
@@ -1536,7 +1626,9 @@ def build_code_check_report(text):
     return {
         "summary": summary,
         "details": details[:MAX_REPORTED_CODE_CHECK_DETAILS],
+        # issues is the numeric count, while all_issues is the full issue text list.
         "issues": issue_count,
+        "all_issues": all_issues,
     }
 
 def format_code_check_report(report):
@@ -1546,8 +1638,8 @@ def format_code_check_report(report):
     lines.extend(report.get("details", []))
     return "\n".join(line for line in lines if line).strip()
 
-def _build_code_error_feedback(exec_results, lint_results):
-    """Format execution and lint failures into a re-prompt error message."""
+def _build_validation_feedback(exec_results, lint_results, static_issues=None):
+    """Format execution, lint, and static-check failures into a re-prompt error message."""
     parts = []
     for lang, result in exec_results:
         if result.get("skipped"):
@@ -1561,6 +1653,9 @@ def _build_code_error_feedback(exec_results, lint_results):
             parts.append(section)
     for lang, lint_output in lint_results:
         parts.append(f"Lint issues ({lang}):\n{lint_output.strip()}")
+    if static_issues:
+        issues_text = "\n".join(f"- {i}" for i in static_issues)
+        parts.append(f"Static code issues found:\n{issues_text}")
     return "\n\n".join(parts)
 
 def _enforce_system_prompt_and_trim_history(history, system_prompt):
@@ -1809,13 +1904,13 @@ async def _ws_handler(websocket):
                             await websocket.send(json.dumps({
                                 "type": "code_check_status",
                                 "status": "done",
-                                "message": f"{lang}: execution skipped — {exec_r['stderr']}",
+                                "message": f"{lang}: execution skipped - {exec_r['stderr']}",
                                 "details": [],
                                 "issues": 0,
                             }))
                         else:
                             status_msg = (
-                                f"{lang}: exit {exec_r['exit_code']} — "
+                                f"{lang}: exit {exec_r['exit_code']} - "
                                 + ("ok" if exec_r["exit_code"] == 0 else "failed")
                             )
                             details = []
@@ -1857,21 +1952,31 @@ async def _ws_handler(websocket):
                                 "issues": 0,
                             }))
 
+                # ── Run static checks ──────────────────────────────────────
+                await websocket.send(json.dumps({
+                    "type": "code_check_status",
+                    "status": "running",
+                    "message": "Running static code checks…",
+                }))
+                code_check_report = build_code_check_report(final_response_text)
+                static_issues = code_check_report.get("all_issues", []) if code_check_report else []
+
                 # ── Check for failures and decide whether to retry ──────────
                 has_exec_fail = any(
                     not r.get("skipped") and r["exit_code"] != 0
                     for _, r in exec_results
                 )
                 has_lint_fail = bool(lint_results)
-                has_failures = has_exec_fail or has_lint_fail
+                has_static_fail = bool(static_issues)
+                has_failures = has_exec_fail or has_lint_fail or has_static_fail
 
                 if has_failures and code_attempt < MAX_CODE_RETRY_ATTEMPTS:
-                    error_feedback = _build_code_error_feedback(exec_results, lint_results)
+                    error_feedback = _build_validation_feedback(exec_results, lint_results, static_issues)
                     await websocket.send(json.dumps({
                         "type": "code_check_status",
                         "status": "running",
                         "message": (
-                            f"Self-correcting code "
+                            f"Issues detected - self-correcting code "
                             f"(attempt {code_attempt + 1}/{MAX_CODE_RETRY_ATTEMPTS})…"
                         ),
                     }))
@@ -1879,21 +1984,15 @@ async def _ws_handler(websocket):
                     history.append({
                         "role": "user",
                         "content": (
-                            "The code you wrote produced errors. "
-                            "Fix them and rewrite the corrected code:\n\n"
+                            "The code you wrote has issues. "
+                            "Fix every problem listed below and rewrite the fully corrected code:\n\n"
                             f"{error_feedback}"
                         ),
                     })
                     continue  # outer retry loop
 
                 # ── No failures (or retries exhausted): emit static checks ──
-                code_check_report = build_code_check_report(final_response_text)
                 if code_check_report:
-                    await websocket.send(json.dumps({
-                        "type": "code_check_status",
-                        "status": "running",
-                        "message": "Running code checks on generated code...",
-                    }))
                     await websocket.send(json.dumps({
                         "type": "code_check_status",
                         "status": "done",
@@ -1967,8 +2066,10 @@ Current UTC date: {current_utc_date}
 
 
 Rules:
+- Always respond in English. Never reply in another language even if the user writes in one.
 - Keep responses plain and direct by default.
 - When you provide code, always use fenced code blocks with a language tag (for example ```python).
+- Write all code in English - every identifier (variable, function, class, parameter), comment, string literal, and printed output must be in English, without exception.
 - Prefer safe, production-ready coding practices and avoid patterns that can break at runtime.
 - After a tool call, wait for the result before doing anything else.
 - When web research is provided, rely on it, cross-reference claims, prioritize up-to-date evidence, and clearly call out uncertainty when sources conflict.
@@ -1979,15 +2080,15 @@ Rules:
 - No bullet points or markdown
 - Mirror the tone and style of the person you're talking to. If they're casual, be casual. If they're brief, be brief. Match their energy.
 - Any Python or JavaScript code you write is automatically executed. If it produces errors, you will receive the output and must fix it.
-- Write complete, runnable code — no stubs, no placeholders, no TODO comments.
+- Write complete, runnable code - no stubs, no placeholders, no TODO comments.
 
 Tools (output ONLY the tool call as your entire response when using a tool):
-- <list_files /> — list all project files
-- <read_file path="filename" /> — read a file
-- <write_file path="filename">content</write_file> — write/create a file
-- <edit_file path="filename"><search>old text</search><replace>new text</replace></edit_file> — edit a file
-- <run_command cmd="command" /> — run a terminal command
-- <grep_files pattern="regex" glob="*.py" /> — search project files for a pattern and get matching snippets (glob is optional)
+- <list_files /> - list all project files
+- <read_file path="filename" /> - read a file
+- <write_file path="filename">content</write_file> - write/create a file
+- <edit_file path="filename"><search>old text</search><replace>new text</replace></edit_file> - edit a file
+- <run_command cmd="command" /> - run a terminal command
+- <grep_files pattern="regex" glob="*.py" /> - search project files for a pattern and get matching snippets (glob is optional)
 """
 
     history = [
@@ -2010,7 +2111,7 @@ Tools (output ONLY the tool call as your entire response when using a tool):
         ws_thread.start()
         print(f"{Colors.GREEN}GUI server started on ws://localhost:7070{Colors.RESET}")
     else:
-        print(f"{Colors.YELLOW}websockets not installed — GUI will not connect. Run: pip install websockets{Colors.RESET}")
+        print(f"{Colors.YELLOW}websockets not installed - GUI will not connect. Run: pip install websockets{Colors.RESET}")
 
     if startup_issue:
         print(f"{Colors.YELLOW}{startup_issue}{Colors.RESET}")
@@ -2204,35 +2305,39 @@ Tools (output ONLY the tool call as your entire response when using a tool):
                             else:
                                 print(f"{Colors.GREEN}  lint: no issues{Colors.RESET}")
 
+                    # ── Run static checks ──────────────────────────────────
+                    print(f"{Colors.CYAN}Running static code checks…{Colors.RESET}")
+                    code_check_report = build_code_check_report(final_response_text)
+                    static_issues = code_check_report.get("all_issues", []) if code_check_report else []
+
                     # ── Check for failures and decide whether to retry ──────
                     has_exec_fail = any(
                         not r.get("skipped") and r["exit_code"] != 0
                         for _, r in exec_results
                     )
                     has_lint_fail = bool(lint_results)
-                    has_failures = has_exec_fail or has_lint_fail
+                    has_static_fail = bool(static_issues)
+                    has_failures = has_exec_fail or has_lint_fail or has_static_fail
 
                     if has_failures and code_attempt < MAX_CODE_RETRY_ATTEMPTS:
-                        error_feedback = _build_code_error_feedback(exec_results, lint_results)
+                        error_feedback = _build_validation_feedback(exec_results, lint_results, static_issues)
                         print(
-                            f"{Colors.YELLOW}Self-correcting code "
+                            f"{Colors.YELLOW}Issues detected - self-correcting code "
                             f"(attempt {code_attempt + 1}/{MAX_CODE_RETRY_ATTEMPTS})…{Colors.RESET}"
                         )
                         history.append({"role": "model", "content": final_response_text})
                         history.append({
                             "role": "user",
                             "content": (
-                                "The code you wrote produced errors. "
-                                "Fix them and rewrite the corrected code:\n\n"
+                                "The code you wrote has issues. "
+                                "Fix every problem listed below and rewrite the fully corrected code:\n\n"
                                 f"{error_feedback}"
                             ),
                         })
                         continue  # retry
 
                     # ── Static checks + final output ────────────────────────
-                    code_check_report = build_code_check_report(final_response_text)
                     if code_check_report:
-                        print(f"{Colors.CYAN}Running code checks on generated code...{Colors.RESET}")
                         print(f"{Colors.CYAN}{code_check_report['summary']}{Colors.RESET}")
                         final_response_text = (
                             f"{final_response_text}\n\n{format_code_check_report(code_check_report)}"
