@@ -1261,14 +1261,16 @@ CODE_PLACEHOLDER_RE = re.compile(
     re.IGNORECASE,
 )
 NON_ASCII_CODE_RE = re.compile(r"[^\x00-\x7F]")
+# Heuristic threshold: values shorter than this are often placeholders/noise.
+MIN_CREDENTIAL_LITERAL_LEN = 8
 HARDCODED_CRED_RE = re.compile(
-    r'''
+    rf'''
     (?ix)
-    (?:\b(?:password|passwd|secret|api[_\-]?key|token|auth)\b\s*=\s*(?:"(?:\\.|[^"\\\n]){8,}"|'(?:\\.|[^'\\\n]){8,}'))
+    (?:\b(?:password|passwd|secret|api[_\-]?key|token|auth)\b\s*=\s*(?:"(?:\\.|[^"\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}"|'(?:\\.|[^'\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}'))
     |
-    (?:["'](?:password|passwd|secret|api[_\-]?key|token|auth)["']\s*:\s*(?:"(?:\\.|[^"\\\n]){8,}"|'(?:\\.|[^'\\\n]){8,}'))
+    (?:["'](?:password|passwd|secret|api[_\-]?key|token|auth)["']\s*:\s*(?:"(?:\\.|[^"\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}"|'(?:\\.|[^'\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}'))
     |
-    (?:\b(?:os\.)?getenv\s*\(\s*["'][A-Za-z0-9_\-]+["']\s*,\s*(?:"(?:\\.|[^"\\\n]){8,}"|'(?:\\.|[^'\\\n]){8,}')\s*\))
+    (?:\b(?:os\.)?getenv\s*\(\s*["'][A-Za-z0-9_\-]+["']\s*,\s*(?:"(?:\\.|[^"\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}"|'(?:\\.|[^'\\\n]){{{MIN_CREDENTIAL_LITERAL_LEN},}}')\s*\))
     ''',
 )
 BARE_EXCEPT_RE = re.compile(r"^\s*except\s*:", re.MULTILINE)
@@ -1546,8 +1548,8 @@ def _run_code_checks_for_block(language, code):
             record_check(
                 not empty_definitions,
                 (
-                    f"Empty body in {_format_short_list(empty_definitions)} — every function and class "
-                    f"must have a real implementation."
+                    f"The following definitions have empty bodies: "
+                    f"{_format_short_list(empty_definitions)} — each must have a real implementation."
                 ),
             )
 
@@ -1609,6 +1611,7 @@ def build_code_check_report(text):
         "summary": summary,
         "details": details[:MAX_REPORTED_CODE_CHECK_DETAILS],
         "issues": issue_count,
+        "all_issues": all_issues,
         "issue_list": all_issues,
     }
 
@@ -1940,7 +1943,7 @@ async def _ws_handler(websocket):
                     "message": "Running static code checks…",
                 }))
                 code_check_report = build_code_check_report(final_response_text)
-                static_issues = code_check_report.get("issue_list", []) if code_check_report else []
+                static_issues = code_check_report.get("all_issues", []) if code_check_report else []
 
                 # ── Check for failures and decide whether to retry ──────────
                 has_exec_fail = any(
@@ -2289,7 +2292,7 @@ Tools (output ONLY the tool call as your entire response when using a tool):
                     # ── Run static checks ──────────────────────────────────
                     print(f"{Colors.CYAN}Running static code checks…{Colors.RESET}")
                     code_check_report = build_code_check_report(final_response_text)
-                    static_issues = code_check_report.get("issue_list", []) if code_check_report else []
+                    static_issues = code_check_report.get("all_issues", []) if code_check_report else []
 
                     # ── Check for failures and decide whether to retry ──────
                     has_exec_fail = any(
