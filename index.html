@@ -158,7 +158,9 @@
     flex-shrink: 0;
     transition: background 0.3s;
   }
+  .status-dot.ready { background: #4caf8a; }
   .status-dot.loading { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  .status-dot.checking { background: #d18a2d; animation: pulse 1.1s ease-in-out infinite; }
   .status-dot.offline { background: var(--text-muted); }
 
   .status-label {
@@ -762,7 +764,7 @@
   <!-- Chat scroll area -->
   <div class="chat-scroll" id="chatScroll">
     <div class="search-progress" id="searchProgress">
-      <div class="search-progress-title">Search Progress</div>
+      <div class="search-progress-title">Activity</div>
       <div class="search-progress-log" id="searchProgressLog"></div>
     </div>
 
@@ -829,6 +831,7 @@ let internetModeEnabled = true;
 // Falls back to a "no backend" graceful state if not connected.
 let ws = null;
 let wsConnected = false;
+let isCodeChecking = false;
 
 function connectWS() {
   try {
@@ -890,6 +893,10 @@ function handleServerMessage(data) {
     appendSearchProgress(data.message, data.query);
     return;
   }
+  if (data.type === 'code_check_status') {
+    handleCodeCheckStatus(data);
+    return;
+  }
   removeThinking();
   if (data.type === 'tool') {
     appendPaceMessage(data.text, data.tool, data.result);
@@ -905,11 +912,14 @@ function handleServerMessage(data) {
 function setStatus(state) {
   statusDot.className = 'status-dot';
   if (state === 'ready') {
-    statusDot.style.background = '#4caf8a';
+    statusDot.classList.add('ready');
     statusLabel.textContent = 'Ready';
   } else if (state === 'thinking') {
     statusDot.classList.add('loading');
     statusLabel.textContent = 'Thinking…';
+  } else if (state === 'checking') {
+    statusDot.classList.add('checking');
+    statusLabel.textContent = 'Checking code…';
   } else if (state === 'offline') {
     statusDot.classList.add('offline');
     statusLabel.textContent = 'Offline';
@@ -918,6 +928,7 @@ function setStatus(state) {
 
 function setIdle() {
   isThinking = false;
+  if (isCodeChecking) return;
   sendBtn.disabled = input.value.trim() === '';
   setStatus(wsConnected ? 'ready' : 'offline');
 }
@@ -953,6 +964,32 @@ function appendSearchProgress(message, query) {
   const stamp = new Date().toLocaleTimeString();
   searchProgressLog.textContent += `[${stamp}] ${line}\n`;
   searchProgressLog.scrollTop = searchProgressLog.scrollHeight;
+}
+
+function handleCodeCheckStatus(data) {
+  const status = String(data.status || '').toLowerCase();
+  const message = String(data.message || '').trim();
+  const details = Array.isArray(data.details) ? data.details : [];
+
+  if (status === 'running') {
+    isCodeChecking = true;
+    setStatus('checking');
+    appendSearchProgress(message || 'Running code checks...', '');
+    return;
+  }
+
+  if (status === 'done') {
+    if (message) appendSearchProgress(message, '');
+    details.forEach((line) => {
+      if (line) appendSearchProgress(String(line), '');
+    });
+    isCodeChecking = false;
+    if (isThinking) {
+      setStatus('thinking');
+    } else {
+      setStatus(wsConnected ? 'ready' : 'offline');
+    }
+  }
 }
 
 function clearSearchProgress() {
@@ -1124,16 +1161,27 @@ function escapeHTML(str) {
 }
 
 function formatText(str) {
-  // Split on fenced code blocks first (```lang\n...\n```)
-  const parts = str.split(/(```[\s\S]*?```)/g);
   let html = '';
-  for (const part of parts) {
-    const fenced = part.match(/^```(\w*)\n?([\s\S]*?)```$/);
-    if (fenced) {
-      const lang = fenced[1] || 'code';
-      const code = fenced[2];
-      const id = 'cb_' + Math.random().toString(36).slice(2);
-      html += `<div class="code-block">
+  const text = String(str ?? '');
+  const fencedRegex = /```([^\n`]*)\r?\n([\s\S]*?)```/g;
+  let lastIndex = 0;
+
+  function formatInlineText(raw) {
+    const parts = String(raw ?? '').split(/(`[^`]+`)/g);
+    return parts.map((part) => {
+      const match = part.match(/^`([^`]+)`$/);
+      if (match) {
+        return `<code class="inline-code">${escapeHTML(match[1])}</code>`;
+      }
+      return escapeHTML(part);
+    }).join('').replace(/\n/g, '<br>');
+  }
+
+  function renderCodeBlock(langRaw, codeRaw) {
+    const lang = (langRaw || '').trim() || 'code';
+    const code = String(codeRaw || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const id = 'cb_' + Math.random().toString(36).slice(2);
+    return `<div class="code-block">
         <div class="code-block-header">
           <span class="code-lang">${escapeHTML(lang)}</span>
           <button class="code-copy-btn" onclick="copyCode('${id}', this)">
@@ -1146,16 +1194,27 @@ function formatText(str) {
         </div>
         <pre id="${id}">${escapeHTML(code)}</pre>
       </div>`;
+  }
+
+  let match;
+  while ((match = fencedRegex.exec(text)) !== null) {
+    html += formatInlineText(text.slice(lastIndex, match.index));
+    html += renderCodeBlock(match[1], match[2]);
+    lastIndex = fencedRegex.lastIndex;
+  }
+
+  if (lastIndex < text.length) {
+    const tail = text.slice(lastIndex);
+    const unterminated = tail.match(/```([^\n`]*)\r?\n([\s\S]*)$/);
+    if (unterminated) {
+      const prefix = tail.slice(0, unterminated.index);
+      html += formatInlineText(prefix);
+      html += renderCodeBlock(unterminated[1], unterminated[2]);
     } else {
-      // Inline code and newlines
-      const safe = escapeHTML(part)
-        .replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
-        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*(.+?)\*/g, '<em>$1</em>')
-        .replace(/\n/g, '<br>');
-      html += safe;
+      html += formatInlineText(tail);
     }
   }
+
   return html;
 }
 
