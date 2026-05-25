@@ -1167,9 +1167,14 @@ function formatText(str) {
   let lastIndex = 0;
 
   function formatInlineText(raw) {
-    return escapeHTML(raw)
-      .replace(/`([^`]+)`/g, (_, code) => `<code class="inline-code">${code}</code>`)
-      .replace(/\n/g, '<br>');
+    const parts = String(raw ?? '').split(/(`[^`]+`)/g);
+    return parts.map((part) => {
+      const match = part.match(/^`([^`]+)`$/);
+      if (match) {
+        return `<code class="inline-code">${escapeHTML(match[1])}</code>`;
+      }
+      return escapeHTML(part);
+    }).join('').replace(/\n/g, '<br>');
   }
 
   function renderCodeBlock(langRaw, codeRaw) {
