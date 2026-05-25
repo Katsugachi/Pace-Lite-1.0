@@ -1199,7 +1199,9 @@ def _run_code_checks_for_block(language, code):
             risky_patterns.append("eval()")
         if re.search(r"\bexec\s*\(", code or ""):
             risky_patterns.append("exec()")
-        if re.search(r"subprocess\.(run|Popen)\s*\([^)]*shell\s*=\s*True", code or "", re.DOTALL):
+        has_subprocess_call = bool(re.search(r"subprocess\.(run|Popen)\s*\(", code or ""))
+        has_shell_true = bool(re.search(r"\bshell\s*=\s*True\b", code or ""))
+        if has_subprocess_call and has_shell_true:
             risky_patterns.append("subprocess shell=True")
         record_check(
             not risky_patterns,

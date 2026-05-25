@@ -927,8 +927,8 @@ function setStatus(state) {
 }
 
 function setIdle() {
-  if (isCodeChecking) return;
   isThinking = false;
+  if (isCodeChecking) return;
   sendBtn.disabled = input.value.trim() === '';
   setStatus(wsConnected ? 'ready' : 'offline');
 }
@@ -1168,7 +1168,7 @@ function formatText(str) {
 
   function formatInlineText(raw) {
     return escapeHTML(raw)
-      .replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
+      .replace(/`([^`]+)`/g, (_, code) => `<code class="inline-code">${code}</code>`)
       .replace(/\n/g, '<br>');
   }
 
