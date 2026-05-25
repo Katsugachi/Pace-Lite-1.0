@@ -1,7 +1,14 @@
 # Pace-Lite-1.0
 Highly capable open source local AI model <br>
 Lite version of pace designed to have a GUI<br>
-Added internet search, allowing for more relevant answers.
+Added internet search, allowing for more relevant answers. <br><br>
+Debugging Script:
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip setuptools wheel
+python pace.py
+```
 ## Main Pace Repo
 https://github.com/Katsugachi/Pace-1.0/tree/main
 ## Start
