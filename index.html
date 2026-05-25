@@ -1376,6 +1376,16 @@ function formatText(str) {
     let fenceLen = 0;
     let codeLang = '';
     let closeFencePattern = null;
+    const closeFencePatternCache = new Map();
+
+    function getCloseFencePattern(char, len) {
+      const key = `${char}:${len}`;
+      if (closeFencePatternCache.has(key)) return closeFencePatternCache.get(key);
+      const safeFenceChar = char === '`' ? '\\`' : '~';
+      const pattern = new RegExp(`^\\s{0,${MAX_FENCE_INDENT}}${safeFenceChar}{${len},}\\s*$`);
+      closeFencePatternCache.set(key, pattern);
+      return pattern;
+    }
 
     function pushText() {
       if (!textBuffer.length) return;
@@ -1392,17 +1402,16 @@ function formatText(str) {
       if (!fenceChar) {
         const openMatch = line.match(OPEN_FENCE_PATTERN);
         if (openMatch) {
-          pushText();
-          fenceChar = openMatch[1][0];
-          if (fenceChar !== '`' && fenceChar !== '~') {
-            fenceChar = '';
+          const detectedFenceChar = openMatch[1][0];
+          if (detectedFenceChar !== '`' && detectedFenceChar !== '~') {
             textBuffer.push(line);
             continue;
           }
+          pushText();
+          fenceChar = detectedFenceChar;
           fenceLen = openMatch[1].length;
           codeLang = (openMatch[2] || '').trim();
-          const safeFenceChar = fenceChar === '`' ? '\\`' : '~';
-          closeFencePattern = new RegExp(`^\\s{0,${MAX_FENCE_INDENT}}${safeFenceChar}{${fenceLen},}\\s*$`);
+          closeFencePattern = getCloseFencePattern(fenceChar, fenceLen);
           continue;
         }
         textBuffer.push(line);
