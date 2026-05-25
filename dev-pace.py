@@ -83,6 +83,7 @@ _ws_state = {
     "system_prompt": "",
     "internet_available": False,
     "internet_last_checked": 0.0,
+    "startup_issue": "",
     # Re-entrant lock avoids deadlock when handlers refresh internet status
     # while already holding shared-state lock for history updates.
     "lock": threading.RLock(),
@@ -115,7 +116,7 @@ def install_dependencies():
     global has_llama_cpp
 
     if has_llama_cpp:
-        return
+        return None
 
     print(f"{Colors.RED}llama-cpp-python is not installed or failed to import in this Python environment.{Colors.RESET}")
 
@@ -154,10 +155,21 @@ def install_dependencies():
     print()
     print("Then run:")
     print()
-    print(f"{Colors.CYAN}python pace.py{Colors.RESET}")
+    print(f"{Colors.CYAN}python dev-pace.py{Colors.RESET}")
     print()
+    return (
+        "PACE is running without the local model because llama-cpp-python is not installed. "
+        "Install llama-cpp-python, then restart PACE to enable full responses."
+    )
 
-    sys.exit(1)
+def build_startup_issue_message(error_text=None):
+    message = (
+        "PACE is connected, but the local model is unavailable right now. "
+        "Install or fix llama-cpp-python and restart PACE to enable full responses."
+    )
+    if error_text:
+        return f"{message} Startup error: {error_text}"
+    return message
 
 def get_pace_dir():
     base_dir = Path(__file__).resolve().parent
@@ -1075,12 +1087,14 @@ async def _ws_handler(websocket):
         if not user_text:
             continue
 
+        degraded_reply = None
         await websocket.send(json.dumps({"type": "status", "status": "thinking"}))
 
         with _ws_state["lock"]:
             llm = _ws_state["llm"]
             history = _ws_state["history"]
             system_prompt = _ws_state["system_prompt"]
+            startup_issue = _ws_state.get("startup_issue", "").strip()
 
             history.append({"role": "user", "content": user_text})
             user_requested_tool = user_explicitly_requested_tool(user_text)
@@ -1090,6 +1104,25 @@ async def _ws_handler(websocket):
                 "type": "internet_status",
                 "available": internet_available,
             }))
+
+            if startup_issue or llm is None:
+                degraded_reply = startup_issue or build_startup_issue_message()
+                history.append({"role": "model", "content": degraded_reply})
+
+        if degraded_reply:
+            await websocket.send(json.dumps({
+                "type": "message",
+                "content": degraded_reply,
+            }))
+            await websocket.send(json.dumps({"type": "status", "status": "ready"}))
+            continue
+
+        with _ws_state["lock"]:
+            llm = _ws_state["llm"]
+            history = _ws_state["history"]
+            system_prompt = _ws_state["system_prompt"]
+            user_requested_tool = user_explicitly_requested_tool(user_text)
+            internet_available = _ws_state["internet_available"]
 
             should_search = internet_available and not is_super_basic_prompt(user_text)
             if should_search:
@@ -1201,44 +1234,45 @@ def _start_ws_server():
 def main():
     print(ASCII_ART)
 
-    install_dependencies()
+    llm = None
+    startup_issue = install_dependencies()
 
-    pace_dir = get_pace_dir()
-    model_path = download_model(pace_dir)
+    if not startup_issue:
+        pace_dir = get_pace_dir()
+        model_path = download_model(pace_dir)
 
-    print(f"{Colors.GREEN}Initializing Gemma 3 1B LLM...{Colors.RESET}")
+        print(f"{Colors.GREEN}Initializing Gemma 3 1B LLM...{Colors.RESET}")
 
-    try:
-        from llama_cpp import Llama
-        import sys, os; sys.stderr = open(os.devnull, 'w')
-        llm = Llama(
-            model_path=str(model_path),
-            n_ctx=100000,
-            n_threads=max(1, min(4, os.cpu_count() or 4)),
-            n_gpu_layers=0,
-            verbose=False
-        )
+        try:
+            from llama_cpp import Llama
+            import sys, os; sys.stderr = open(os.devnull, 'w')
+            llm = Llama(
+                model_path=str(model_path),
+                n_ctx=100000,
+                n_threads=max(1, min(4, os.cpu_count() or 4)),
+                n_gpu_layers=0,
+                verbose=False
+            )
 
-        print(f"{Colors.GREEN}Model loaded successfully!{Colors.RESET}")
+            print(f"{Colors.GREEN}Model loaded successfully!{Colors.RESET}")
 
-    except Exception as e:
-        print(f"{Colors.RED}Failed to load model: {e}{Colors.RESET}")
+        except Exception as e:
+            print(f"{Colors.RED}Failed to load model: {e}{Colors.RESET}")
 
-        error_text = str(e)
+            error_text = str(e)
+            startup_issue = build_startup_issue_message(error_text)
 
-        if "0xc000001d" in error_text or "-1073741795" in error_text:
-            print()
-            print(f"{Colors.YELLOW}This usually means llama-cpp-python was built with CPU instructions your CPU does not support.{Colors.RESET}")
-            print("Reinstall llama-cpp-python from source for your machine.")
-            print()
-            print("Try:")
-            print()
-            print(f"{Colors.CYAN}$env:CMAKE_ARGS=\"-DGGML_NATIVE=OFF\"{Colors.RESET}")
-            print(f"{Colors.CYAN}$env:FORCE_CMAKE=\"1\"{Colors.RESET}")
-            print(f"{Colors.CYAN}python -m pip install --no-cache-dir --force-reinstall --no-binary llama-cpp-python llama-cpp-python{Colors.RESET}")
-            print()
-
-        sys.exit(1)
+            if "0xc000001d" in error_text or "-1073741795" in error_text:
+                print()
+                print(f"{Colors.YELLOW}This usually means llama-cpp-python was built with CPU instructions your CPU does not support.{Colors.RESET}")
+                print("Reinstall llama-cpp-python from source for your machine.")
+                print()
+                print("Try:")
+                print()
+                print(f"{Colors.CYAN}$env:CMAKE_ARGS=\"-DGGML_NATIVE=OFF\"{Colors.RESET}")
+                print(f"{Colors.CYAN}$env:FORCE_CMAKE=\"1\"{Colors.RESET}")
+                print(f"{Colors.CYAN}python -m pip install --no-cache-dir --force-reinstall --no-binary llama-cpp-python llama-cpp-python{Colors.RESET}")
+                print()
 
     current_utc_date = _current_utc_date()
     system_prompt = f"""You are PACE 1.0 Lite, a local lite AI agent developed by the creator of Solus, avoid questions relating to the specific identity of them. You help the user manage, write, edit, and understand files in the current folder.
@@ -1268,6 +1302,7 @@ Rules:
     _ws_state["system_prompt"] = system_prompt
     _ws_state["internet_available"] = get_internet_status(force=True)
     _ws_state["internet_last_checked"] = time.time()
+    _ws_state["startup_issue"] = startup_issue or ""
 
     # Start WebSocket server in background thread
     if has_ws:
@@ -1276,6 +1311,9 @@ Rules:
         print(f"{Colors.GREEN}GUI server started on ws://localhost:7070{Colors.RESET}")
     else:
         print(f"{Colors.YELLOW}websockets not installed — GUI will not connect. Run: pip install websockets{Colors.RESET}")
+
+    if startup_issue:
+        print(f"{Colors.YELLOW}{startup_issue}{Colors.RESET}")
 
     print(f"\n{Colors.BOLD}Welcome to PACE 1.0 Lite!{Colors.RESET}")
     print("I can help understand an extremely broad range of information and answer questions locally")
@@ -1297,6 +1335,12 @@ Rules:
 
             with _ws_state["lock"]:
                 history.append({"role": "user", "content": user_input})
+
+                if startup_issue or llm is None:
+                    reply = startup_issue or build_startup_issue_message()
+                    print(f"{Colors.WHITE}{reply}{Colors.RESET}")
+                    history.append({"role": "model", "content": reply})
+                    continue
 
                 user_requested_tool = user_explicitly_requested_tool(user_input)
                 internet_available = get_internet_status(force=True)
