@@ -1262,8 +1262,14 @@ CODE_PLACEHOLDER_RE = re.compile(
 )
 NON_ASCII_CODE_RE = re.compile(r"[^\x00-\x7F]")
 HARDCODED_CRED_RE = re.compile(
-    r'(?:password|passwd|secret|api[_\-]?key|token|auth)\s*=\s*["\'][^"\']{4,}["\']',
-    re.IGNORECASE,
+    r'''
+    (?ix)
+    (?:\b(?:password|passwd|secret|api[_\-]?key|token|auth)\b\s*=\s*["'][^"'\n]{4,}["'])
+    |
+    (?:["'](?:password|passwd|secret|api[_\-]?key|token|auth)["']\s*:\s*["'][^"'\n]{4,}["'])
+    |
+    (?:\b(?:os\.)?getenv\s*\(\s*["'][A-Za-z0-9_\-]+["']\s*,\s*["'][^"'\n]{4,}["']\s*\))
+    ''',
 )
 BARE_EXCEPT_RE = re.compile(r"^\s*except\s*:", re.MULTILINE)
 TOOL_INTENT_PATTERNS = [
@@ -1441,6 +1447,11 @@ def _has_balanced_delimiters(code):
 
     return not stack and in_string is None
 
+def _format_short_list(items, max_items=3):
+    shown = list(items[:max_items])
+    suffix = "..." if len(items) > max_items else ""
+    return ", ".join(shown) + suffix
+
 def _run_code_checks_for_block(language, code):
     checks_run = 0
     checks_passed = 0
@@ -1531,10 +1542,12 @@ def _run_code_checks_for_block(language, code):
                     ]
                     if not real_stmts:
                         empty_defs.append(getattr(node, "name", "?"))
-            label = ", ".join(empty_defs[:3]) + ("..." if len(empty_defs) > 3 else "")
             record_check(
                 not empty_defs,
-                f"Empty body in {label} — every function and class must have a real implementation.",
+                (
+                    f"Empty body in {_format_short_list(empty_defs)} — every function and class "
+                    f"must have a real implementation."
+                ),
             )
 
             # Check 10: Non-English identifier names (via AST)
@@ -1549,13 +1562,15 @@ def _run_code_checks_for_block(language, code):
                     name = node.arg
                 elif isinstance(node, ast.Attribute):
                     name = node.attr
-                if name and any(ord(c) > 127 for c in name):
+                if name and NON_ASCII_CODE_RE.search(name):
                     non_ascii_ids.append(name)
             if non_ascii_ids:
-                label = ", ".join(non_ascii_ids[:3]) + ("..." if len(non_ascii_ids) > 3 else "")
                 record_check(
                     False,
-                    f"Non-English identifier(s) in Python code: {label} — use English names.",
+                    (
+                        f"Non-English identifier(s) in Python code: {_format_short_list(non_ascii_ids)} "
+                        f"— use English names."
+                    ),
                 )
 
     elif language == "json":
