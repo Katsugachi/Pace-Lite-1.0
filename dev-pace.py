@@ -1030,6 +1030,9 @@ def normalize_model_output(text):
         wrappers_removed = True
         cleaned = updated
 
+    cleaned = re.sub(r'@@[A-Za-z]+\d+@@', 'code', cleaned, flags=re.IGNORECASE)
+
+
     return cleaned, wrappers_removed
 
 def user_explicitly_requested_tool(user_input):
